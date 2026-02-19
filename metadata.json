@@ -1,0 +1,5 @@
+{
+  "name": "Aether Player",
+  "description": "A high-end, minimalist playlist player featuring cinematic controls, intelligent track analysis via Gemini, and a specialized smooth fade-out engine.",
+  "requestFramePermissions": []
+}
