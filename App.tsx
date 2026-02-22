@@ -227,16 +227,21 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || playlist.length === 0) return;
+    if (!audio || !currentTrack) return;
     const loadAndPlay = async () => {
-      setLoadError(null);
-      audio.pause();
-      audio.src = currentTrack.url;
-      audio.load();
-      if (state.isPlaying) try { await audio.play(); } catch (e) {}
+      // Only reload if the source is actually different to avoid muting during reorder
+      // We compare the resolved absolute URLs
+      const absoluteUrl = new URL(currentTrack.url, window.location.href).href;
+      if (audio.src !== absoluteUrl) {
+        setLoadError(null);
+        audio.pause();
+        audio.src = currentTrack.url;
+        audio.load();
+        if (state.isPlaying) try { await audio.play(); } catch (e) {}
+      }
     };
     loadAndPlay();
-  }, [state.currentTrackIndex, playlist]);
+  }, [currentTrack?.id]); // Only depend on track ID to handle track changes and reordering
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">

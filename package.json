@@ -1,22 +1,53 @@
 {
   "name": "aether-player",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
+  "description": "A high-end, minimalist playlist player with cinematic controls and smooth fade-out engine.",
+  "author": "Aether Team",
   "type": "module",
+  "main": "main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "electron:dev": "NODE_ENV=development electron .",
+    "dist": "npm run build && electron-builder"
   },
   "dependencies": {
     "@google/genai": "^1.42.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "tailwindcss": "^3.4.17"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^40.6.0",
+    "electron-builder": "^26.8.1",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
+  },
+  "build": {
+    "appId": "com.aether.player",
+    "productName": "Aether Player",
+    "files": [
+      "dist/**/*",
+      "main.cjs",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.music",
+      "identity": null
+    },
+    "win": {
+      "target": "nsis"
+    }
   }
 }
