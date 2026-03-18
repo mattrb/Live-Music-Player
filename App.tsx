@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { MOCK_PLAYLIST } from './constants';
-import { PlayerState, Track } from './types';
+import { PlayerState, Track, PlaybackMode } from './types';
 import { TrackItem } from './components/TrackItem';
 import { LargeControls } from './components/LargeControls';
 
 const App: React.FC = () => {
-  const [playlist, setPlaylist] = useState<Track[]>(MOCK_PLAYLIST);
+  const [playlist, setPlaylist] = useState<Track[]>([]);
   const [state, setState] = useState<PlayerState>({
     isPlaying: false,
     currentTrackIndex: 0,
+    selectedTrackIndex: 0,
     volume: 1,
     progress: 0,
     isFading: false,
@@ -17,23 +18,29 @@ const App: React.FC = () => {
     duration: 0,
     isDucked: false,
     duckingLevel: -10, // Initial -10dB
-    fadeOutDuration: 5  // Initial 5s
+    fadeOutDuration: 5,  // Initial 5s
+    isLoudnessNormalized: true
   });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isDraggingProgress, setIsDraggingProgress] = useState(false);
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const nextAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mainGainRef = useRef<GainNode | null>(null);
+  const nextGainRef = useRef<GainNode | null>(null);
   const duckGainRef = useRef<GainNode | null>(null);
+  const limiterRef = useRef<DynamicsCompressorNode | null>(null);
   const fadeIntervalRef = useRef<number | null>(null);
   const playlistContainerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isCrossfadingRef = useRef(false);
 
   const currentTrack = playlist[state.currentTrackIndex];
+  const NORMALIZATION_GAIN = 1.8; // Approx boost for -16 LUFS target from typical -23 LUFS
   const TARGET_LUFS_GAIN = 0.65; 
-
+  const CROSSFADE_DURATION = 5;
   // Helper to convert dB to linear gain
   const dbToLinear = (db: number) => Math.pow(10, db / 20);
 
@@ -46,38 +53,58 @@ const App: React.FC = () => {
   }, [playlist]);
 
   const initAudioEngine = useCallback(() => {
-    if (audioContextRef.current || !audioRef.current) return;
+    if (audioContextRef.current || !audioRef.current || !nextAudioRef.current) return;
 
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioContextClass();
       
       const source = ctx.createMediaElementSource(audioRef.current);
+      const nextSource = ctx.createMediaElementSource(nextAudioRef.current);
+      
       const mainGain = ctx.createGain();
+      const nextGain = ctx.createGain();
       const duckGain = ctx.createGain();
-      const compressor = ctx.createDynamicsCompressor();
+      const limiter = ctx.createDynamicsCompressor();
+
+      // Limiter settings for peak protection
+      limiter.threshold.setValueAtTime(-1.0, ctx.currentTime);
+      limiter.knee.setValueAtTime(0, ctx.currentTime);
+      limiter.ratio.setValueAtTime(20, ctx.currentTime);
+      limiter.attack.setValueAtTime(0.001, ctx.currentTime);
+      limiter.release.setValueAtTime(0.1, ctx.currentTime);
 
       mainGain.gain.value = 0;
+      nextGain.gain.value = 0;
       duckGain.gain.value = state.isDucked ? dbToLinear(state.duckingLevel) : 1;
       
-      compressor.threshold.setValueAtTime(-20, ctx.currentTime);
-      compressor.knee.setValueAtTime(12, ctx.currentTime);
-      compressor.ratio.setValueAtTime(4, ctx.currentTime);
-      compressor.attack.setValueAtTime(0.005, ctx.currentTime);
-      compressor.release.setValueAtTime(0.25, ctx.currentTime);
-
-      source.connect(compressor);
-      compressor.connect(duckGain);
-      duckGain.connect(mainGain);
-      mainGain.connect(ctx.destination);
+      source.connect(mainGain);
+      nextSource.connect(nextGain);
+      
+      mainGain.connect(duckGain);
+      nextGain.connect(duckGain);
+      
+      duckGain.connect(limiter);
+      limiter.connect(ctx.destination);
 
       audioContextRef.current = ctx;
       mainGainRef.current = mainGain;
+      nextGainRef.current = nextGain;
       duckGainRef.current = duckGain;
+      limiterRef.current = limiter;
     } catch (err) {
       console.warn("Audio Context init deferred.");
     }
   }, [state.isDucked, state.duckingLevel]);
+
+  // Handle Normalization Parameter Changes Real-time
+  useEffect(() => {
+    if (mainGainRef.current && audioContextRef.current && state.isPlaying) {
+      const now = audioContextRef.current.currentTime;
+      const baseGain = state.isLoudnessNormalized ? NORMALIZATION_GAIN : TARGET_LUFS_GAIN;
+      mainGainRef.current.gain.setTargetAtTime(baseGain, now, 0.1);
+    }
+  }, [state.isLoudnessNormalized, state.isPlaying]);
 
   // Handle Ducking Parameter Changes Real-time
   useEffect(() => {
@@ -93,27 +120,76 @@ const App: React.FC = () => {
     setState(prev => ({ ...prev, isDucked: !prev.isDucked }));
   }, []);
 
-  const handleFolderSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const toggleShuffle = useCallback(() => {
+    setState(prev => ({ ...prev, isShuffle: !prev.isShuffle }));
+  }, []);
+
+  const toggleTrackPlaybackMode = useCallback((index: number) => {
+    setPlaylist(prev => {
+      const newPlaylist = [...prev];
+      const track = newPlaylist[index];
+      const modes = [PlaybackMode.FOLLOW, PlaybackMode.ADVANCE, PlaybackMode.STOP];
+      const currentIndex = modes.indexOf(track.playbackMode);
+      const nextIndex = (currentIndex + 1) % modes.length;
+      newPlaylist[index] = { ...track, playbackMode: modes[nextIndex] };
+      return newPlaylist;
+    });
+  }, []);
+
+  const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
+    
     playlist.forEach(t => { if (t.url.startsWith('blob:')) URL.revokeObjectURL(t.url); });
+    
     const audioFiles = (Array.from(files) as File[]).filter(file => 
       file.type.startsWith('audio/') || /\.(mp3|wav|ogg|flac|m4a)$/i.test(file.name)
     );
+    
     if (audioFiles.length === 0) {
       setLoadError("No audio files found.");
       return;
     }
-    const newPlaylist: Track[] = audioFiles.map((file, index) => ({
-      id: `local-${index}-${Date.now()}`,
-      title: file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "),
-      artist: "Local Storage",
-      duration: "--:--",
-      url: URL.createObjectURL(file),
-      cover: ''
+
+    const formatTime = (seconds: number) => {
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${mins}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    const newPlaylist: Track[] = await Promise.all(audioFiles.map(async (file, index) => {
+      const url = URL.createObjectURL(file);
+      
+      // Get duration
+      let durationStr = "--:--";
+      try {
+        durationStr = await new Promise((resolve) => {
+          const tempAudio = new Audio();
+          tempAudio.src = url;
+          tempAudio.onloadedmetadata = () => {
+            resolve(formatTime(tempAudio.duration));
+          };
+          tempAudio.onerror = () => resolve("--:--");
+          // Timeout after 2s if metadata doesn't load
+          setTimeout(() => resolve("--:--"), 2000);
+        });
+      } catch (e) {
+        console.error("Error getting duration for", file.name);
+      }
+
+      return {
+        id: `local-${index}-${Date.now()}`,
+        title: file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "),
+        artist: "Local Storage",
+        duration: durationStr,
+        url: url,
+        cover: '',
+        playbackMode: PlaybackMode.FOLLOW // Default to follow for seamless playback
+      };
     }));
+
     setPlaylist(newPlaylist);
-    setState(prev => ({ ...prev, currentTrackIndex: 0, isPlaying: false, currentTime: 0, progress: 0, isFading: false }));
+    setState(prev => ({ ...prev, currentTrackIndex: 0, selectedTrackIndex: 0, isPlaying: false, currentTime: 0, progress: 0, isFading: false }));
     setLoadError(null);
   };
 
@@ -138,8 +214,23 @@ const App: React.FC = () => {
     } else {
       try {
         setLoadError(null);
+        
+        // If selected track is different from current playing track, switch to it
+        if (state.selectedTrackIndex !== state.currentTrackIndex) {
+          setState(prev => ({ 
+            ...prev, 
+            currentTrackIndex: prev.selectedTrackIndex,
+            currentTime: 0,
+            progress: 0,
+            isPlaying: true 
+          }));
+          // The useEffect for currentTrackIndex change will handle loading the new source
+          return;
+        }
+
         if (mainGainRef.current && audioContextRef.current) {
-          mainGainRef.current.gain.setTargetAtTime(TARGET_LUFS_GAIN, audioContextRef.current.currentTime, 0.01);
+          const baseGain = state.isLoudnessNormalized ? NORMALIZATION_GAIN : TARGET_LUFS_GAIN;
+          mainGainRef.current.gain.setTargetAtTime(baseGain, audioContextRef.current.currentTime, 0.01);
         }
         await audioRef.current.play();
         setState(prev => ({ ...prev, isPlaying: true }));
@@ -148,7 +239,57 @@ const App: React.FC = () => {
         setState(prev => ({ ...prev, isPlaying: false }));
       }
     }
-  }, [state.isPlaying, initAudioEngine, playlist.length, TARGET_LUFS_GAIN]);
+  }, [state.isPlaying, state.isLoudnessNormalized, state.selectedTrackIndex, state.currentTrackIndex, initAudioEngine, playlist.length, TARGET_LUFS_GAIN, NORMALIZATION_GAIN]);
+
+  const startCrossfade = useCallback(async () => {
+    if (isCrossfadingRef.current || !audioRef.current || !nextAudioRef.current || !mainGainRef.current || !nextGainRef.current || !audioContextRef.current) return;
+    
+    isCrossfadingRef.current = true;
+    const nextIndex = (state.isShuffle) ? Math.floor(Math.random() * playlist.length) : (state.currentTrackIndex + 1) % playlist.length;
+    const nextTrack = playlist[nextIndex];
+    
+    const ctx = audioContextRef.current;
+    const now = ctx.currentTime;
+    const baseGain = state.isLoudnessNormalized ? NORMALIZATION_GAIN : TARGET_LUFS_GAIN;
+
+    // Prepare next audio
+    nextAudioRef.current.src = nextTrack.url;
+    nextAudioRef.current.load();
+    
+    // Fade out current
+    mainGainRef.current.gain.cancelScheduledValues(now);
+    mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
+    mainGainRef.current.gain.exponentialRampToValueAtTime(0.001, now + CROSSFADE_DURATION);
+    
+    // Fade in next
+    nextGainRef.current.gain.cancelScheduledValues(now);
+    nextGainRef.current.gain.setValueAtTime(0.001, now);
+    nextGainRef.current.gain.exponentialRampToValueAtTime(baseGain, now + CROSSFADE_DURATION);
+    
+    try {
+      await nextAudioRef.current.play();
+    } catch (e) {
+      console.error("Crossfade play failed", e);
+    }
+    
+    setTimeout(() => {
+      if (audioRef.current && nextAudioRef.current && mainGainRef.current && nextGainRef.current) {
+        audioRef.current.pause();
+        
+        // Swap refs for the next cycle
+        const tempAudio = audioRef.current;
+        audioRef.current = nextAudioRef.current;
+        nextAudioRef.current = tempAudio;
+        
+        const tempGain = mainGainRef.current;
+        mainGainRef.current = nextGainRef.current;
+        nextGainRef.current = tempGain;
+        
+        isCrossfadingRef.current = false;
+        setState(prev => ({ ...prev, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0 }));
+      }
+    }, CROSSFADE_DURATION * 1000);
+  }, [state.isShuffle, state.currentTrackIndex, state.isLoudnessNormalized, playlist, NORMALIZATION_GAIN, TARGET_LUFS_GAIN]);
 
   const startFadeOut = useCallback(() => {
     if (!audioRef.current || !mainGainRef.current || !audioContextRef.current || state.isFading || !state.isPlaying) return;
@@ -192,6 +333,28 @@ const App: React.FC = () => {
           e.preventDefault();
           toggleDucking();
           break;
+        case 'KeyS':
+          e.preventDefault();
+          toggleShuffle();
+          break;
+        case 'Enter':
+          e.preventDefault();
+          setState(prev => ({ ...prev, currentTrackIndex: prev.selectedTrackIndex, isPlaying: true, currentTime: 0 }));
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          setState(prev => ({
+            ...prev,
+            selectedTrackIndex: prev.selectedTrackIndex > 0 ? prev.selectedTrackIndex - 1 : playlist.length - 1
+          }));
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          setState(prev => ({
+            ...prev,
+            selectedTrackIndex: prev.selectedTrackIndex < playlist.length - 1 ? prev.selectedTrackIndex + 1 : 0
+          }));
+          break;
         default:
           break;
       }
@@ -199,7 +362,15 @@ const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlayPause, startFadeOut, toggleDucking]);
+  }, [handlePlayPause, startFadeOut, toggleDucking, toggleShuffle, playlist.length]);
+
+  // Scroll active track into view
+  useEffect(() => {
+    const activeElement = document.querySelector('.track-selected');
+    if (activeElement) {
+      activeElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [state.selectedTrackIndex]);
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (state.isFading) return; 
@@ -251,10 +422,10 @@ const App: React.FC = () => {
           <div className="flex items-center justify-between">
             <h1 className="text-xs font-bold tracking-[0.3em] uppercase opacity-40">Aether Player</h1>
             <div className="flex items-center gap-3">
-              <button onClick={() => setState(p => ({ ...p, isShuffle: !p.isShuffle }))} className={`text-[10px] p-2 rounded-full border transition-all ${state.isShuffle ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-400' : 'bg-white/5 border-white/5 text-white/30 hover:text-white/60'}`}><i className="fa-solid fa-shuffle"></i></button>
-              <button onClick={() => fileInputRef.current?.click()} className="text-[9px] font-bold tracking-[0.1em] uppercase text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-2 bg-indigo-500/10 px-3 py-1.5 rounded-full border border-indigo-500/20"><i className="fa-solid fa-folder-open"></i> Browse</button>
+              <button onClick={toggleShuffle} className={`text-[10px] p-2 rounded-full border transition-all ${state.isShuffle ? 'bg-amber-500/20 border-amber-500/50 text-amber-400' : 'bg-white/5 border-white/5 text-white/30 hover:text-white/60'}`} title="Shuffle"><i className="fa-solid fa-shuffle"></i></button>
+              <button onClick={() => fileInputRef.current?.click()} className="text-[9px] font-bold tracking-[0.1em] uppercase text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-2 bg-indigo-500/10 px-3 py-1.5 rounded-full border border-indigo-500/20"><i className="fa-solid fa-folder-open"></i> Load Tracks</button>
             </div>
-            <input type="file" ref={fileInputRef} onChange={handleFolderSelect} style={{ display: 'none' }} webkitdirectory="" directory="" multiple />
+            <input type="file" ref={fileInputRef} onChange={handleFolderSelect} style={{ display: 'none' }} multiple accept="audio/*" />
           </div>
           <p className="text-sm font-medium opacity-80">Studio Grade Session Console</p>
         </div>
@@ -274,12 +445,20 @@ const App: React.FC = () => {
                 </div>
               </div>
               
-              <div className="w-full flex justify-between mb-8 text-[10px] font-mono opacity-40">
+              <div className="w-full flex justify-between items-center mb-8 text-[10px] font-mono opacity-40">
                 <span>{Math.floor(state.currentTime / 60)}:{(Math.floor(state.currentTime % 60)).toString().padStart(2,'0')}</span>
                 <span>-{Math.floor((state.duration - state.currentTime) / 60)}:{(Math.floor((state.duration - state.currentTime) % 60)).toString().padStart(2,'0')}</span>
               </div>
 
-              <LargeControls isPlaying={state.isPlaying} onPlayPause={handlePlayPause} onFadeOut={startFadeOut} onToggleDuck={toggleDucking} isFading={state.isFading} isDucked={state.isDucked} />
+              <LargeControls 
+                isPlaying={state.isPlaying} 
+                isSelectionDifferent={state.selectedTrackIndex !== state.currentTrackIndex}
+                onPlayPause={handlePlayPause} 
+                onFadeOut={startFadeOut} 
+                onToggleDuck={toggleDucking} 
+                isFading={state.isFading} 
+                isDucked={state.isDucked} 
+              />
             </>
           ) : (
             <button onClick={() => fileInputRef.current?.click()} className="btn-primary px-10 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em]">Load Folder</button>
@@ -302,6 +481,15 @@ const App: React.FC = () => {
           </div>
           <div className="bg-white/5 border border-white/5 p-4 rounded-2xl flex flex-col gap-4">
             <div className="flex items-center justify-between opacity-40">
+              <span className="text-[9px] font-bold uppercase tracking-widest">Loudness Mode (-16 LUFS)</span>
+              <button 
+                onClick={() => setState(p => ({ ...p, isLoudnessNormalized: !p.isLoudnessNormalized }))}
+                className={`w-10 h-5 rounded-full relative transition-colors ${state.isLoudnessNormalized ? 'bg-emerald-500' : 'bg-white/10'}`}
+              >
+                <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${state.isLoudnessNormalized ? 'left-6' : 'left-1'}`}></div>
+              </button>
+            </div>
+            <div className="flex items-center justify-between opacity-40">
               <span className="text-[9px] font-bold uppercase tracking-widest">Fade Time (Esc)</span>
               <span className="text-[10px] font-mono">{state.fadeOutDuration}s</span>
             </div>
@@ -317,17 +505,53 @@ const App: React.FC = () => {
         {playlist.length > 0 && (
           <div className="flex flex-col gap-2 max-h-[250px] overflow-y-auto custom-scrollbar pr-2 pb-8">
             {playlist.map((track, index) => (
-              <TrackItem key={track.id} track={track} index={index} isActive={state.currentTrackIndex === index} onClick={() => setState(p => ({ ...p, currentTrackIndex: index, isPlaying: true, isFading: false, currentTime: 0 }))} onDragStart={handleDragStart} onDragOver={() => {}} onDrop={handleDrop} />
+              <TrackItem 
+                key={track.id} 
+                track={track} 
+                index={index} 
+                isActive={state.currentTrackIndex === index} 
+                isSelected={state.selectedTrackIndex === index}
+                onClick={() => setState(p => ({ ...p, selectedTrackIndex: index }))} 
+                onDragStart={handleDragStart} 
+                onDragOver={() => {}} 
+                onDrop={handleDrop}
+                onTogglePlaybackMode={() => toggleTrackPlaybackMode(index)}
+              />
             ))}
           </div>
         )}
 
         <audio 
           ref={audioRef} 
-          onTimeUpdate={() => { if (!isDraggingProgress && audioRef.current) setState(p => ({ ...p, currentTime: audioRef.current!.currentTime, progress: (audioRef.current!.currentTime / audioRef.current!.duration) * 100 })) }}
+          onTimeUpdate={() => { 
+            if (!isDraggingProgress && audioRef.current) {
+              const time = audioRef.current.currentTime;
+              const duration = audioRef.current.duration;
+              setState(p => ({ ...p, currentTime: time, progress: (time / duration) * 100 }));
+              
+              // Trigger crossfade if shuffle is on and we're 5s from end
+              if (state.isShuffle && time > duration - CROSSFADE_DURATION && !isCrossfadingRef.current) {
+                startCrossfade();
+              }
+            }
+          }}
           onLoadedMetadata={() => audioRef.current && setState(p => ({ ...p, duration: audioRef.current!.duration }))}
-          onEnded={() => { const next = (state.isShuffle) ? Math.floor(Math.random() * playlist.length) : (state.currentTrackIndex + 1) % playlist.length; setState(p => ({ ...p, currentTrackIndex: next, currentTime: 0 })); }}
+          onEnded={() => { 
+            if (playlist.length === 0 || isCrossfadingRef.current) return;
+            const currentTrack = playlist[state.currentTrackIndex];
+            const nextIndex = (state.isShuffle) ? Math.floor(Math.random() * playlist.length) : (state.currentTrackIndex + 1) % playlist.length;
+            
+            if (currentTrack.playbackMode === PlaybackMode.FOLLOW) {
+              setState(p => ({ ...p, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: true }));
+            } else if (currentTrack.playbackMode === PlaybackMode.ADVANCE) {
+              setState(p => ({ ...p, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: false }));
+            } else {
+              setState(p => ({ ...p, isPlaying: false, currentTime: 0 }));
+              if (audioRef.current) audioRef.current.currentTime = 0;
+            }
+          }}
         />
+        <audio ref={nextAudioRef} style={{ display: 'none' }} />
       </main>
     </div>
   );

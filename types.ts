@@ -5,11 +5,19 @@ export interface Track {
   duration: string;
   url: string;
   cover: string;
+  playbackMode: PlaybackMode;
+}
+
+export enum PlaybackMode {
+  STOP = 'stop',       // Mode 3: Keep current track selected, don't play
+  ADVANCE = 'advance', // Mode 2: Advance selection, don't play
+  FOLLOW = 'follow'    // Mode 1: Advance selection and play
 }
 
 export interface PlayerState {
   isPlaying: boolean;
   currentTrackIndex: number;
+  selectedTrackIndex: number;
   volume: number;
   progress: number;
   isFading: boolean;
@@ -19,4 +27,5 @@ export interface PlayerState {
   isDucked: boolean;
   duckingLevel: number;
   fadeOutDuration: number;
+  isLoudnessNormalized: boolean;
 }

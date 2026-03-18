@@ -1,5 +1,5 @@
 
-import { Track } from './types';
+import { Track, PlaybackMode } from './types';
 
 // Start with some bundled music placeholders
 export const MOCK_PLAYLIST: Track[] = [
@@ -9,7 +9,8 @@ export const MOCK_PLAYLIST: Track[] = [
     artist: 'Aether Bundled',
     duration: '03:45',
     url: './music/midnight_echo.mp3',
-    cover: 'https://picsum.photos/seed/aether1/400/400'
+    cover: 'https://picsum.photos/seed/aether1/400/400',
+    playbackMode: PlaybackMode.ADVANCE
   },
   {
     id: 'bundled-2',
@@ -17,7 +18,8 @@ export const MOCK_PLAYLIST: Track[] = [
     artist: 'Aether Bundled',
     duration: '04:12',
     url: './music/neon_drift.mp3',
-    cover: 'https://picsum.photos/seed/aether2/400/400'
+    cover: 'https://picsum.photos/seed/aether2/400/400',
+    playbackMode: PlaybackMode.ADVANCE
   }
 ];
 
