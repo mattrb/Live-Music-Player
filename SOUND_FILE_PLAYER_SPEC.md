@@ -22,18 +22,22 @@ A professional-grade, high-fidelity "Session Console" audio player designed for 
     - **Behavior**: If a new track is selected in the playlist but not playing, it displays "PLAY SELECTED". Otherwise, toggles "START" / "PAUSE".
 - **Fade Out**: A rose-red (`#e11d48`) button with a "wind" icon. Triggers a smooth exponential volume ramp to zero before advancing.
 - **Duck**: An indigo (`#4f46e5`) button. Manually toggles a volume reduction (ducking) for voice-over or background utility.
+- **Edit Mode**: A toggleable state that reveals a precision trim window for the "Next Up" track.
 
 ### 4. Precision Knobs (Secondary Controls)
 - **Ducking Offset**: A slider controlling the attenuation level (0dB to -40dB).
 - **Loudness Mode**: A toggle switch for EBU R128-inspired normalization. When ON, it targets -16 LUFS for consistent perceived volume across different files.
 - **Fade Time**: A slider adjusting the duration of the "Fade Out" command (1s to 15s).
+- **Track Trimming**: Draggable IN and OUT points on a waveform visualization to set custom start and end times for any track.
 
 ### 5. Smart Playlist (Bottom Section)
 - **Selection Logic**: Clicking a track highlights it (Selection) but does **not** interrupt the current playback.
+- **Edit Button**: A pencil icon next to each track that opens the "Next Up" edit window for that specific track.
+- **Infinite Loop**: A circular arrow icon (`fa-arrows-rotate`) that, when active, causes the track to repeat indefinitely, overriding the sequence logic.
 - **Playback Modes**: Each track has a toggleable mode icon:
-    - **Mode 1 (Follow)**: Seamlessly plays the next track.
-    - **Mode 2 (Advance)**: Loads the next track but pauses.
-    - **Mode 3 (Stop)**: Stops playback after the track ends.
+    - **Mode 1 (Follow)**: Seamlessly plays the next track (indicated by a down arrow).
+    - **Mode 2 (Advance)**: Loads the next track but pauses (indicated by a down arrow).
+    - **Mode 3 (Stop)**: Stops playback after the track ends (indicated by a stop icon).
 - **Reordering**: Drag-and-drop support for manual setlist management.
 - **Metadata**: Displays accurate `MM:SS` durations extracted from file headers.
 

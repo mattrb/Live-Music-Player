@@ -12,6 +12,9 @@ export interface Track {
   endTime?: number;
   volumeTrim?: number;
   waveformData?: number[];
+  isLooping?: boolean;
+  bpm?: number;
+  firstBeat?: number;
 }
 
 export enum PlaybackMode {

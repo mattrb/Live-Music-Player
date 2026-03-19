@@ -12,7 +12,9 @@ interface TrackItemProps {
   onDragOver: (index: number) => void;
   onDrop: (index: number) => void;
   onTogglePlaybackMode: () => void;
+  onToggleLoop?: () => void;
   onRemove: () => void;
+  onEdit?: () => void;
   onVolumeTrimChange: (trim: number) => void;
 }
 
@@ -26,7 +28,9 @@ export const TrackItem: React.FC<TrackItemProps> = ({
   onDragOver,
   onDrop,
   onTogglePlaybackMode,
+  onToggleLoop,
   onRemove,
+  onEdit,
   onVolumeTrimChange
 }) => {
   return (
@@ -39,7 +43,7 @@ export const TrackItem: React.FC<TrackItemProps> = ({
       }}
       onDrop={() => onDrop(index)}
       className={`group flex items-center justify-between p-4 cursor-grab active:cursor-grabbing transition-all duration-200 rounded-lg mb-1 border
-        ${isActive ? 'track-active bg-white/10 border-white/20 shadow-lg' : isSelected ? 'track-selected bg-white/5 border-white/10' : 'track-inactive border-transparent hover:bg-white/5 hover:text-white'}
+        ${isActive ? 'track-active bg-emerald-500/10 border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.15)]' : isSelected ? 'track-selected bg-white/5 border-white/10' : 'track-inactive border-transparent hover:bg-white/5 hover:text-white'}
         hover:border-white/10`}
     >
       <div className="flex items-center gap-3 overflow-hidden flex-1" onClick={onClick}>
@@ -60,12 +64,24 @@ export const TrackItem: React.FC<TrackItemProps> = ({
             {track.title}
           </span>
           
-          {/* Volume Trim Slider - Visible on hover */}
+          {/* Volume Trim Slider - Visible on hover or if active */}
           <div 
-            className="h-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity"
+            className={`h-4 flex items-center gap-1 transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
             onClick={(e) => e.stopPropagation()}
           >
-            <i className="fa-solid fa-sliders text-[8px] opacity-40"></i>
+            <i className="fa-solid fa-sliders text-[8px] opacity-40 mr-1"></i>
+            
+            <button 
+              onClick={() => {
+                const currentTrim = track.volumeTrim !== undefined ? track.volumeTrim : 1.0;
+                onVolumeTrimChange(Math.max(0, currentTrim * Math.pow(10, -1/20)));
+              }}
+              className="w-4 h-4 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-[8px] text-white/40 hover:text-white transition-colors"
+              title="-1dB"
+            >
+              -
+            </button>
+
             <input 
               type="range" 
               min="0" 
@@ -73,9 +89,21 @@ export const TrackItem: React.FC<TrackItemProps> = ({
               step="0.01" 
               value={track.volumeTrim !== undefined ? track.volumeTrim : 1.0} 
               onChange={(e) => onVolumeTrimChange(parseFloat(e.target.value))}
-              className="w-24 h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-white"
+              className="w-20 h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-white"
             />
-            <span className="text-[8px] font-mono opacity-40">
+
+            <button 
+              onClick={() => {
+                const currentTrim = track.volumeTrim !== undefined ? track.volumeTrim : 1.0;
+                onVolumeTrimChange(Math.min(2, currentTrim * Math.pow(10, 1/20)));
+              }}
+              className="w-4 h-4 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-[8px] text-white/40 hover:text-white transition-colors"
+              title="+1dB"
+            >
+              +
+            </button>
+
+            <span className="text-[8px] font-mono opacity-40 ml-1 min-w-[25px]">
               {Math.round((track.volumeTrim !== undefined ? track.volumeTrim : 1.0) * 100)}%
             </span>
           </div>
@@ -96,10 +124,24 @@ export const TrackItem: React.FC<TrackItemProps> = ({
           title={`Playback Mode: ${track.playbackMode.charAt(0).toUpperCase() + track.playbackMode.slice(1)}`}
         >
           <i className={`fa-solid ${
-            track.playbackMode === PlaybackMode.FOLLOW ? 'fa-forward-step' : 
-            track.playbackMode === PlaybackMode.ADVANCE ? 'fa-arrow-right' : 
+            track.playbackMode === PlaybackMode.FOLLOW ? 'fa-arrow-down' : 
+            track.playbackMode === PlaybackMode.ADVANCE ? 'fa-arrow-down' : 
             'fa-stop'
           } text-[10px]`}></i>
+          {track.playbackMode === PlaybackMode.FOLLOW && <span className="text-[8px] font-bold">PLAY</span>}
+        </button>
+
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleLoop?.();
+          }}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-all border ${
+            track.isLooping ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-400' : 'bg-white/5 border-white/5 text-white/20 hover:text-white/40'
+          }`}
+          title="Infinite Loop"
+        >
+          <i className="fa-solid fa-arrows-rotate text-[10px]"></i>
         </button>
 
         <span className="text-xs font-mono opacity-60">
@@ -119,6 +161,17 @@ export const TrackItem: React.FC<TrackItemProps> = ({
           title="Remove from playlist"
         >
           <i className="fa-solid fa-trash-can text-[10px]"></i>
+        </button>
+
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit?.();
+          }}
+          className="p-2 rounded-md transition-all text-white/20 hover:text-indigo-400 hover:bg-indigo-500/10"
+          title="Edit track range"
+        >
+          <i className="fa-solid fa-pen-to-square text-[10px]"></i>
         </button>
       </div>
     </div>
