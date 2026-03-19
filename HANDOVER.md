@@ -1,7 +1,7 @@
-# Project Handover: Aether Player
+# Project Handover: Sound File Player
 
 ## Project Status
-Aether Player is a minimalist, high-end Electron music player. It is currently **operational** in the Google AI Studio environment and configured for **standalone macOS builds**.
+Sound File Player is a minimalist, high-end Electron music player. It is currently **operational** in the Google AI Studio environment and configured for **standalone macOS and Windows builds**. Beta Release.
 
 ## Solved Problems & Technical Decisions
 
@@ -19,11 +19,12 @@ Aether Player is a minimalist, high-end Electron music player. It is currently *
     *   Set `base: './'` in `vite.config.ts`.
     *   Updated `index.html` to use relative paths (`./index.css`, `./index.tsx`).
 
-### 4. macOS Build & Code Signing
-*   **Problem:** macOS build failed with "resource fork, Finder information, or similar detritus not allowed" during the `codesign` step.
+### 4. macOS & Windows Build & Code Signing
+*   **Problem:** macOS and Windows builds require specific configurations for cross-platform compatibility.
 *   **Solution:** 
     *   Added `"identity": null` to the `mac` build config in `package.json` to bypass ad-hoc signing issues.
-    *   Recommended running `xattr -cr .` locally to strip hidden macOS metadata.
+    *   Added `win` configuration with `nsis` target for Windows installers.
+    *   Recommended running `xattr -cr .` locally on macOS to strip hidden metadata.
 
 ### 5. UI/UX Stability
 *   **Problem:** Quirks Mode warnings and mounting errors.

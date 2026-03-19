@@ -1,7 +1,7 @@
-# Aether Player - Release Notes
+# Sound File Player - Release Notes
 
 ## Overview
-Aether Player is a focused, minimalist audio player designed for local library playback with precise transition controls.
+Sound File Player is a focused, minimalist audio player designed for local library playback with precise transition controls. Beta Release.
 
 ## Core Functions
 
@@ -29,6 +29,6 @@ Aether Player is a focused, minimalist audio player designed for local library p
 *   `D`: Toggle Ducking Mode
 
 ## Technical Specifications
-*   **Platform**: macOS (Standalone Electron App)
+*   **Platform**: macOS & Windows (Standalone Electron App)
 *   **Engine**: Web Audio API with Dynamics Compression
 *   **Interface**: High-contrast, minimalist dashboard optimized for focused sessions.

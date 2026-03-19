@@ -1,12 +1,12 @@
-# Aether Player: Technical Specification & Design Prompt
+# Sound File Player: Technical Specification & Design Prompt
 
 ## Core Concept
-A professional-grade, high-fidelity "Session Console" audio player designed for live environments, studio monitoring, and seamless background playback. The app prioritizes audio integrity, precise control, and a "hardware-inspired" aesthetic.
+A professional-grade, high-fidelity "Session Console" audio player designed for live environments, studio monitoring, and seamless background playback. The app prioritizes audio integrity, precise control, and a "hardware-inspired" aesthetic. Beta Release.
 
 ## GUI Architecture
 
 ### 1. Header & Global Actions (Top Right)
-- **Title Block**: "AETHER PLAYER" in a minimalist, wide-tracked uppercase font, sub-headed with "Studio Grade Session Console".
+- **Title Block**: "Sound File Player" in a minimalist, bold font.
 - **Global Shuffle**: A circular button next to the load action. It features a shuffle icon and glows amber (`#f59e0b`) when active.
 - **Load Tracks**: A pill-shaped button labeled "LOAD TRACKS" with a folder icon. It allows multi-selection of individual audio files (MP3, WAV, OGG, FLAC, M4A).
 

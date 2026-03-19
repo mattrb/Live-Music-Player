@@ -6,6 +6,12 @@ export interface Track {
   url: string;
   cover: string;
   playbackMode: PlaybackMode;
+  averageLevel?: number;
+  isAnalyzing?: boolean;
+  startTime?: number;
+  endTime?: number;
+  volumeTrim?: number;
+  waveformData?: number[];
 }
 
 export enum PlaybackMode {
