@@ -445,6 +445,7 @@ const App: React.FC = () => {
         setPlaylist(prev => prev.map(t => t.id === track.id ? { 
           ...t, 
           duration: metadata.durationStr, 
+          fullDuration: metadata.duration,
           averageLevel: analysis.rms, 
           waveformData: analysis.waveform,
           endTime: metadata.duration,
@@ -769,8 +770,18 @@ const App: React.FC = () => {
     setPlaylist(prev => {
       const newPlaylist = [...prev];
       const track = newPlaylist[index];
-      const newStart = start !== undefined ? start : (track.startTime || 0);
-      const newEnd = end !== undefined ? end : (track.endTime || 0);
+      const maxDuration = track.fullDuration || 0;
+      
+      let newStart = start !== undefined ? start : (track.startTime || 0);
+      let newEnd = end !== undefined ? end : (track.endTime || maxDuration);
+      
+      // Handle NaN (empty inputs)
+      if (isNaN(newStart)) newStart = 0;
+      if (isNaN(newEnd)) newEnd = maxDuration;
+
+      // Enforce constraints and round to 0.1s
+      newStart = Math.round(Math.max(0, Math.min(newStart, newEnd - 0.1)) * 10) / 10;
+      newEnd = Math.round(Math.max(newStart + 0.1, Math.min(newEnd, maxDuration)) * 10) / 10;
       
       newPlaylist[index] = { 
         ...track, 
@@ -785,6 +796,14 @@ const App: React.FC = () => {
     setPlaylist(prev => {
       const newPlaylist = [...prev];
       newPlaylist[index] = { ...newPlaylist[index], volumeTrim: trim };
+      return newPlaylist;
+    });
+  }, []);
+
+  const updateTrackTitle = useCallback((index: number, title: string) => {
+    setPlaylist(prev => {
+      const newPlaylist = [...prev];
+      newPlaylist[index] = { ...newPlaylist[index], title };
       return newPlaylist;
     });
   }, []);
@@ -1094,20 +1113,26 @@ const App: React.FC = () => {
 
               {isEditing && (
                 <div className="p-6 bg-indigo-500/5 animate-in slide-in-from-bottom-4 duration-500">
-                  <div className="flex justify-between items-center mb-4">
-                    <div className="flex flex-col">
-                      <span className="text-[9px] uppercase tracking-widest text-indigo-400 mb-1 font-bold">Next Up (Editing)</span>
-                      <h2 className="text-sm font-bold truncate max-w-[250px]">{selectedTrack.title}</h2>
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="flex flex-col flex-1">
+                      <span className="text-[9px] uppercase tracking-widest text-indigo-400 mb-1 font-bold">Editing Track</span>
+                      <input 
+                        type="text"
+                        value={selectedTrack.title}
+                        onChange={(e) => updateTrackTitle(state.selectedTrackIndex, e.target.value)}
+                        className="bg-white/5 border border-white/10 rounded px-2 py-1 text-sm font-bold text-white outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 transition-all w-full"
+                        placeholder="Track Title"
+                      />
                     </div>
                     <button 
                       onClick={() => setIsEditing(false)}
-                      className="text-[10px] px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-white/40 transition-all"
+                      className="text-[10px] px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white transition-all ml-4 border border-white/5"
                     >
                       Close Edit
                     </button>
                   </div>
 
-                  <div className="w-full mb-2 group/seek relative h-16 flex items-center">
+                  <div className="w-full mb-6 group/seek relative h-16 flex items-center">
                     {/* Waveform Visualization */}
                     <div className="absolute inset-0 flex items-center justify-between pointer-events-none opacity-20">
                       {selectedTrack.waveformData?.map((val, i) => (
@@ -1124,8 +1149,8 @@ const App: React.FC = () => {
                       <div 
                         className="absolute h-full bg-emerald-500/20"
                         style={{ 
-                          left: `${((selectedTrack.startTime || 0) / (isViewingCurrent ? state.duration : (selectedTrack.endTime || 1))) * 100}%`,
-                          width: `${(((selectedTrack.endTime || (isViewingCurrent ? state.duration : 0)) - (selectedTrack.startTime || 0)) / (isViewingCurrent ? state.duration : (selectedTrack.endTime || 1))) * 100}%`
+                          left: `${((selectedTrack.startTime || 0) / (selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 1))) * 100}%`,
+                          width: `${(((selectedTrack.endTime || (selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 0))) - (selectedTrack.startTime || 0)) / (selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 1))) * 100}%`
                         }}
                       ></div>
 
@@ -1136,27 +1161,45 @@ const App: React.FC = () => {
 
                       {/* Start Handle */}
                       <div 
-                        className="absolute top-1/2 -translate-y-1/2 w-1 h-6 bg-emerald-500 cursor-ew-resize z-10 group-hover/seek:opacity-100 opacity-0 transition-opacity"
-                        style={{ left: `${((selectedTrack.startTime || 0) / (isViewingCurrent ? state.duration : (selectedTrack.endTime || 1))) * 100}%` }}
+                        className="absolute top-1/2 -translate-y-1/2 w-1 h-8 bg-emerald-500 cursor-ew-resize z-20"
+                        style={{ left: `${((selectedTrack.startTime || 0) / (selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 1))) * 100}%` }}
                         onMouseDown={() => setDraggingHandle('start')}
                       >
-                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-[8px] font-mono text-emerald-400 bg-black/80 px-1 rounded">IN</div>
+                        <div className="absolute -top-10 left-1/2 -translate-x-1/2">
+                          <input 
+                            type="number"
+                            step="0.1"
+                            value={selectedTrack.startTime || 0}
+                            onChange={(e) => updateTrackRange(state.selectedTrackIndex, parseFloat(e.target.value))}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="w-14 bg-emerald-950/90 border border-emerald-500/50 text-emerald-400 text-[10px] font-mono rounded px-1 py-0.5 text-center focus:border-emerald-400 outline-none shadow-lg"
+                          />
+                        </div>
                       </div>
 
                       {/* End Handle */}
                       <div 
-                        className="absolute top-1/2 -translate-y-1/2 w-1 h-6 bg-rose-500 cursor-ew-resize z-10 group-hover/seek:opacity-100 opacity-0 transition-opacity"
-                        style={{ left: `${((selectedTrack.endTime || (isViewingCurrent ? state.duration : (selectedTrack.endTime || 1))) / (isViewingCurrent ? state.duration : (selectedTrack.endTime || 1))) * 100}%` }}
+                        className="absolute top-1/2 -translate-y-1/2 w-1 h-8 bg-rose-500 cursor-ew-resize z-20"
+                        style={{ left: `${((selectedTrack.endTime || (selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 1))) / (selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 1))) * 100}%` }}
                         onMouseDown={() => setDraggingHandle('end')}
                       >
-                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-[8px] font-mono text-rose-400 bg-black/80 px-1 rounded">OUT</div>
+                        <div className="absolute -top-10 left-1/2 -translate-x-1/2">
+                          <input 
+                            type="number"
+                            step="0.1"
+                            value={selectedTrack.endTime || 0}
+                            onChange={(e) => updateTrackRange(state.selectedTrackIndex, undefined, parseFloat(e.target.value))}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="w-14 bg-rose-950/90 border border-rose-500/50 text-rose-400 text-[10px] font-mono rounded px-1 py-0.5 text-center focus:border-rose-400 outline-none shadow-lg"
+                          />
+                        </div>
                       </div>
 
                       <input 
                         type="range" 
                         min="0" 
-                        max={isViewingCurrent ? (state.duration || 100) : (selectedTrack.endTime || 100)} 
-                        step="0.01" 
+                        max={selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 100)} 
+                        step="0.1" 
                         value={isViewingCurrent ? state.currentTime : (selectedTrack.startTime || 0)} 
                         onChange={handleSeek} 
                         onMouseDown={() => setIsDraggingProgress(true)} 
@@ -1174,11 +1217,12 @@ const App: React.FC = () => {
                           const seekBar = document.querySelector('.group\\/seek')?.getBoundingClientRect();
                           if (seekBar) {
                             const relativeX = Math.max(0, Math.min(seekBar.width, e.clientX - seekBar.left));
-                            const time = (relativeX / seekBar.width) * (isViewingCurrent ? state.duration : (selectedTrack.endTime || 0));
+                            const rawTime = (relativeX / seekBar.width) * (selectedTrack.fullDuration || (isViewingCurrent ? state.duration : 0));
+                            const time = Math.round(rawTime * 10) / 10;
                             if (draggingHandle === 'start') {
-                              updateTrackRange(state.selectedTrackIndex, Math.min(time, (selectedTrack.endTime || (isViewingCurrent ? state.duration : 0)) - 0.1));
+                              updateTrackRange(state.selectedTrackIndex, time);
                             } else {
-                              updateTrackRange(state.selectedTrackIndex, undefined, Math.max(time, (selectedTrack.startTime || 0) + 0.1));
+                              updateTrackRange(state.selectedTrackIndex, undefined, time);
                             }
                           }
                         }}
@@ -1187,7 +1231,7 @@ const App: React.FC = () => {
                     )}
                   </div>
                   
-                  <div className="w-full flex justify-between items-center text-[10px] font-mono opacity-40">
+                  <div className="w-full flex justify-between items-center text-[10px] font-mono opacity-40 mb-4">
                     <span>
                       {isViewingCurrent 
                         ? `${Math.floor(state.currentTime / 60)}:${(Math.floor(state.currentTime % 60)).toString().padStart(2,'0')}`
@@ -1319,8 +1363,18 @@ const App: React.FC = () => {
             const nextIndex = (state.isShuffle) ? Math.floor(Math.random() * playlist.length) : (state.currentTrackIndex + 1) % playlist.length;
             
             if (currentTrack.playbackMode === PlaybackMode.FOLLOW) {
+              if (nextIndex === state.currentTrackIndex && audioRef.current) {
+                audioRef.current.currentTime = playlist[nextIndex].startTime || 0;
+                // We don't need to call play() here because isPlaying is already true or being set to true,
+                // and the useEffect will handle it if the index changed. 
+                // If index didn't change, we need to make sure the audio element actually plays.
+                audioRef.current.play().catch(() => {});
+              }
               setState(p => ({ ...p, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: true }));
             } else if (currentTrack.playbackMode === PlaybackMode.ADVANCE) {
+              if (nextIndex === state.currentTrackIndex && audioRef.current) {
+                audioRef.current.currentTime = playlist[nextIndex].startTime || 0;
+              }
               setState(p => ({ ...p, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: false }));
             } else {
               setState(p => ({ ...p, isPlaying: false, currentTime: 0 }));

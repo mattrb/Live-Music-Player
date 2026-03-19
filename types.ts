@@ -15,6 +15,7 @@ export interface Track {
   isLooping?: boolean;
   bpm?: number;
   firstBeat?: number;
+  fullDuration?: number;
 }
 
 export enum PlaybackMode {

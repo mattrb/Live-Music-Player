@@ -25,14 +25,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   return (
     <AnimatePresence>
       {isOpen && (
-        <>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
           {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
           />
           
           {/* Modal Content */}
@@ -40,9 +40,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md z-[51] p-6"
+            className="relative w-full max-w-md z-[101]"
           >
-            <div className="bg-zinc-900/80 border border-white/10 backdrop-blur-2xl rounded-[2rem] p-8 shadow-2xl">
+            <div className="bg-zinc-900/90 border border-white/10 backdrop-blur-2xl rounded-[2.5rem] p-8 shadow-2xl">
               <div className="flex items-center justify-between mb-8">
                 <h2 className="text-sm font-bold tracking-[0.3em] uppercase opacity-60">Player Settings</h2>
                 <button 
@@ -111,7 +111,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
           </motion.div>
-        </>
+        </div>
       )}
     </AnimatePresence>
   );
