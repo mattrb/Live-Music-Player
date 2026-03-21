@@ -42,9 +42,11 @@ export const TrackItem: React.FC<TrackItemProps> = ({
         onDragOver(index);
       }}
       onDrop={() => onDrop(index)}
-      className={`group flex items-center justify-between p-4 cursor-grab active:cursor-grabbing transition-all duration-200 rounded-lg mb-1 border
-        ${isActive ? 'track-active bg-emerald-500/10 border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.15)]' : isSelected ? 'track-selected bg-white/5 border-white/10' : 'track-inactive border-transparent hover:bg-white/5 hover:text-white'}
-        hover:border-white/10`}
+      className={`group flex items-center justify-between p-4 cursor-grab active:cursor-grabbing transition-all duration-200 rounded-lg mb-1 border-l-[10px]
+        ${isActive ? 'bg-emerald-500/10 shadow-lg shadow-emerald-500/5 border-l-emerald-500' : 'border-l-transparent'}
+        ${isSelected ? 'border-l-white/60' : ''}
+        ${!isActive && isSelected ? 'bg-white/10' : ''}
+        ${!isActive && !isSelected ? `hover:bg-white/10 hover:text-white ${index % 2 === 0 ? 'bg-white/[0.02]' : 'bg-white/[0.05]'}` : ''}`}
     >
       <div className="flex items-center gap-3 overflow-hidden flex-1" onClick={onClick}>
         <div className="flex flex-col items-center gap-0.5 opacity-20 group-hover:opacity-60 transition-opacity pr-1">
@@ -63,50 +65,6 @@ export const TrackItem: React.FC<TrackItemProps> = ({
           <span className="text-sm font-medium tracking-tight truncate">
             {track.title}
           </span>
-          
-          {/* Volume Trim Slider - Visible on hover or if active */}
-          <div 
-            className={`h-4 flex items-center gap-1 transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <i className="fa-solid fa-sliders text-[8px] opacity-40 mr-1"></i>
-            
-            <button 
-              onClick={() => {
-                const currentTrim = track.volumeTrim !== undefined ? track.volumeTrim : 1.0;
-                onVolumeTrimChange(Math.max(0, currentTrim * Math.pow(10, -1/20)));
-              }}
-              className="w-4 h-4 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-[8px] text-white/40 hover:text-white transition-colors"
-              title="-1dB"
-            >
-              -
-            </button>
-
-            <input 
-              type="range" 
-              min="0" 
-              max="2" 
-              step="0.01" 
-              value={track.volumeTrim !== undefined ? track.volumeTrim : 1.0} 
-              onChange={(e) => onVolumeTrimChange(parseFloat(e.target.value))}
-              className="w-20 h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-white"
-            />
-
-            <button 
-              onClick={() => {
-                const currentTrim = track.volumeTrim !== undefined ? track.volumeTrim : 1.0;
-                onVolumeTrimChange(Math.min(2, currentTrim * Math.pow(10, 1/20)));
-              }}
-              className="w-4 h-4 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-[8px] text-white/40 hover:text-white transition-colors"
-              title="+1dB"
-            >
-              +
-            </button>
-
-            <span className="text-[8px] font-mono opacity-40 ml-1 min-w-[25px]">
-              {Math.round((track.volumeTrim !== undefined ? track.volumeTrim : 1.0) * 100)}%
-            </span>
-          </div>
         </div>
       </div>
       

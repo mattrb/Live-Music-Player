@@ -1,26 +1,40 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 
+import { TestToneChannel } from '../types';
+
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  masterVolume: number;
+  setMasterVolume: (volume: number) => void;
   duckingLevel: number;
   setDuckingLevel: (level: number) => void;
   fadeOutDuration: number;
   setFadeOutDuration: (duration: number) => void;
   isLoudnessNormalized: boolean;
   setIsLoudnessNormalized: (value: boolean) => void;
+  isTestToneOn: boolean;
+  setIsTestToneOn: (value: boolean) => void;
+  testToneChannel: TestToneChannel;
+  setTestToneChannel: (channel: TestToneChannel) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
+  masterVolume,
+  setMasterVolume,
   duckingLevel,
   setDuckingLevel,
   fadeOutDuration,
   setFadeOutDuration,
   isLoudnessNormalized,
-  setIsLoudnessNormalized
+  setIsLoudnessNormalized,
+  isTestToneOn,
+  setIsTestToneOn,
+  testToneChannel,
+  setTestToneChannel
 }) => {
   return (
     <AnimatePresence>
@@ -54,18 +68,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
 
               <div className="flex flex-col gap-8">
-                {/* Leveller Toggle */}
-                <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">Leveller</span>
+                {/* Top Row: Leveller & Master Volume */}
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Leveller Toggle */}
+                  <div className="flex flex-col gap-3 p-4 bg-white/5 rounded-2xl border border-white/5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">Leveller</span>
+                      <button 
+                        onClick={() => setIsLoudnessNormalized(!isLoudnessNormalized)}
+                        className={`w-10 h-5 rounded-full relative transition-colors ${isLoudnessNormalized ? 'bg-emerald-500' : 'bg-white/10'}`}
+                      >
+                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${isLoudnessNormalized ? 'left-[22px]' : 'left-1'}`}></div>
+                      </button>
+                    </div>
                     <p className="text-[9px] opacity-30 leading-relaxed uppercase tracking-wider">Loudness Normalization</p>
                   </div>
-                  <button 
-                    onClick={() => setIsLoudnessNormalized(!isLoudnessNormalized)}
-                    className={`w-10 h-5 rounded-full relative transition-colors ${isLoudnessNormalized ? 'bg-emerald-500' : 'bg-white/10'}`}
-                  >
-                    <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${isLoudnessNormalized ? 'left-[22px]' : 'left-1'}`}></div>
-                  </button>
+
+                  {/* Master Volume */}
+                  <div className="flex flex-col gap-3 p-4 bg-white/5 rounded-2xl border border-white/5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">Master</span>
+                      <span className="text-[10px] font-mono text-white/60">{Math.round(masterVolume * 100)}%</span>
+                    </div>
+                    <input 
+                      type="range" min="0" max="1" step="0.01" 
+                      value={masterVolume} 
+                      onChange={(e) => setMasterVolume(parseFloat(e.target.value))}
+                      className="w-full accent-white h-1 bg-white/10 rounded-full appearance-none cursor-pointer hover:bg-white/20 transition-colors"
+                    />
+                  </div>
                 </div>
 
                 {/* Ducking Offset */}
@@ -100,6 +131,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <p className="text-[9px] opacity-30 leading-relaxed uppercase tracking-wider">
                     Sets the duration of the smooth logarithmic fade-out.
                   </p>
+                </div>
+
+                {/* Test Tone */}
+                <div className="flex flex-col gap-6 pt-4 border-t border-white/5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">Reference Tone</span>
+                      <p className="text-[9px] opacity-30 leading-relaxed uppercase tracking-wider">1kHz @ -18dBFS</p>
+                    </div>
+                    <button 
+                      onClick={() => setIsTestToneOn(!isTestToneOn)}
+                      className={`w-10 h-5 rounded-full relative transition-colors ${isTestToneOn ? 'bg-amber-500' : 'bg-white/10'}`}
+                    >
+                      <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${isTestToneOn ? 'left-[22px]' : 'left-1'}`}></div>
+                    </button>
+                  </div>
+
+                  {isTestToneOn && (
+                    <div className="flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                      <span className="text-[9px] font-bold uppercase tracking-widest opacity-30">Channel Selection</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {(['left', 'both', 'right'] as TestToneChannel[]).map((ch) => (
+                          <button
+                            key={ch}
+                            onClick={() => setTestToneChannel(ch)}
+                            className={`py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all border ${
+                              testToneChannel === ch 
+                                ? 'bg-amber-500/20 border-amber-500/50 text-amber-400' 
+                                : 'bg-white/5 border-white/5 text-white/30 hover:bg-white/10'
+                            }`}
+                          >
+                            {ch}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

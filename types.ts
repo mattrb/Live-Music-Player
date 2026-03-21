@@ -24,6 +24,8 @@ export enum PlaybackMode {
   FOLLOW = 'follow'    // Mode 1: Advance selection and play
 }
 
+export type TestToneChannel = 'left' | 'right' | 'both';
+
 export interface PlayerState {
   isPlaying: boolean;
   currentTrackIndex: number;
@@ -38,4 +40,6 @@ export interface PlayerState {
   duckingLevel: number;
   fadeOutDuration: number;
   isLoudnessNormalized: boolean;
+  isTestToneOn: boolean;
+  testToneChannel: TestToneChannel;
 }

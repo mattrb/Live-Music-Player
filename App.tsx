@@ -5,23 +5,36 @@ import { TrackItem } from './components/TrackItem';
 import { LargeControls } from './components/LargeControls';
 import { SettingsModal } from './components/SettingsModal';
 
+const NUM_PLAYLISTS = 3;
+
+const INITIAL_PLAYER_STATE: PlayerState = {
+  isPlaying: false,
+  currentTrackIndex: 0,
+  selectedTrackIndex: 0,
+  volume: 1,
+  progress: 0,
+  isFading: false,
+  isShuffle: false,
+  currentTime: 0,
+  duration: 0,
+  isDucked: false,
+  duckingLevel: -10, // Initial -10dB
+  fadeOutDuration: 5,  // Initial 5s
+  isLoudnessNormalized: true,
+  isTestToneOn: false,
+  testToneChannel: 'both'
+};
+
 const App: React.FC = () => {
-  const [playlist, setPlaylist] = useState<Track[]>([]);
-  const [state, setState] = useState<PlayerState>({
-    isPlaying: false,
-    currentTrackIndex: 0,
-    selectedTrackIndex: 0,
-    volume: 1,
-    progress: 0,
-    isFading: false,
-    isShuffle: false,
-    currentTime: 0,
-    duration: 0,
-    isDucked: false,
-    duckingLevel: -10, // Initial -10dB
-    fadeOutDuration: 5,  // Initial 5s
-    isLoudnessNormalized: true
-  });
+  const [activeTab, setActiveTab] = useState(0);
+  const [playlists, setPlaylists] = useState<Track[][]>([[], [], []]);
+  const [states, setStates] = useState<PlayerState[]>([
+    { ...INITIAL_PLAYER_STATE },
+    { ...INITIAL_PLAYER_STATE },
+    { ...INITIAL_PLAYER_STATE }
+  ]);
+  const [playlistTitles, setPlaylistTitles] = useState<string[]>(['Playlist 1', 'Playlist 2', 'Playlist 3']);
+  const [editingTabIndex, setEditingTabIndex] = useState<number | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [draggingHandle, setDraggingHandle] = useState<'start' | 'end' | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -30,30 +43,62 @@ const App: React.FC = () => {
   const [maxAverageLevel, setMaxAverageLevel] = useState<number>(0.1);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  const [oscStatus, setOscStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected');
+  const [analysisQueue, setAnalysisQueue] = useState<string[]>([]);
+  const [isWorkerBusy, setIsWorkerBusy] = useState(false);
   const sessionFileInputRef = useRef<HTMLInputElement | null>(null);
   
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const nextAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRefs = [useRef<HTMLAudioElement | null>(null), useRef<HTMLAudioElement | null>(null), useRef<HTMLAudioElement | null>(null)];
+  const nextAudioRefs = [useRef<HTMLAudioElement | null>(null), useRef<HTMLAudioElement | null>(null), useRef<HTMLAudioElement | null>(null)];
   const audioContextRef = useRef<AudioContext | null>(null);
-  const mainGainRef = useRef<GainNode | null>(null);
-  const nextGainRef = useRef<GainNode | null>(null);
-  const duckGainRef = useRef<GainNode | null>(null);
+  const mainGainsRef = useRef<(GainNode | null)[]>([null, null, null]);
+  const nextGainsRef = useRef<(GainNode | null)[]>([null, null, null]);
+  const duckGainsRef = useRef<(GainNode | null)[]>([null, null, null]);
+  const tabGainsRef = useRef<(GainNode | null)[]>([null, null, null]);
+  const masterGainRef = useRef<GainNode | null>(null);
   const limiterRef = useRef<DynamicsCompressorNode | null>(null);
-  const fadeIntervalRef = useRef<number | null>(null);
+  const testToneOscRef = useRef<OscillatorNode | null>(null);
+  const testToneGainRef = useRef<GainNode | null>(null);
+  const testTonePannerRef = useRef<StereoPannerNode | null>(null);
+  const fadeIntervalRefs = useRef<(number | null)[]>([null, null, null]);
   const playlistContainerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
-  const isCrossfadingRef = useRef(false);
-  const playPromiseRef = useRef<Promise<void> | null>(null);
+  const isCrossfadingRefs = useRef<boolean[]>([false, false, false]);
+  const playPromiseRefs = useRef<(Promise<void> | null)[]>([null, null, null]);
+  const crossfadeTimeoutRefs = useRef<(number | null)[]>([null, null, null]);
 
-  const lastLoadedUrlRef = useRef<string>('');
+  const lastLoadedUrlRefs = useRef<string[]>(['', '', '']);
 
   const isMountedRef = useRef(true);
+  const statesRef = useRef(states);
+  const playlistsRef = useRef(playlists);
+  const activeTabRef = useRef(activeTab);
+  const playlistTitlesRef = useRef(playlistTitles);
+  
+  useEffect(() => {
+    statesRef.current = states;
+  }, [states]);
+
+  useEffect(() => {
+    playlistsRef.current = playlists;
+  }, [playlists]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    playlistTitlesRef.current = playlistTitles;
+  }, [playlistTitles]);
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => { isMountedRef.current = false; };
   }, []);
 
+  const state = states[activeTab];
+  const playlist = playlists[activeTab];
   const currentTrack = playlist[state.currentTrackIndex];
   const selectedTrack = playlist[state.selectedTrackIndex];
   const isViewingCurrent = state.selectedTrackIndex === state.currentTrackIndex;
@@ -71,18 +116,13 @@ const App: React.FC = () => {
   }, [maxAverageLevel]);
 
   const initAudioEngine = useCallback(() => {
-    if (audioContextRef.current || !audioRef.current || !nextAudioRef.current) return;
+    if (audioContextRef.current) return;
 
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioContextClass();
       
-      const source = ctx.createMediaElementSource(audioRef.current);
-      const nextSource = ctx.createMediaElementSource(nextAudioRef.current);
-      
-      const mainGain = ctx.createGain();
-      const nextGain = ctx.createGain();
-      const duckGain = ctx.createGain();
+      const masterGain = ctx.createGain();
       const limiter = ctx.createDynamicsCompressor();
 
       // Limiter settings for peak protection
@@ -92,111 +132,306 @@ const App: React.FC = () => {
       limiter.attack.setValueAtTime(0.001, ctx.currentTime);
       limiter.release.setValueAtTime(0.1, ctx.currentTime);
 
-      mainGain.gain.value = 0;
-      nextGain.gain.value = 0;
-      duckGain.gain.value = state.isDucked ? dbToLinear(state.duckingLevel) : 1;
+      masterGain.connect(ctx.destination);
+      limiter.connect(masterGain);
+
+      // Create 3 chains
+      for (let i = 0; i < NUM_PLAYLISTS; i++) {
+        const audio = audioRefs[i].current;
+        const nextAudio = nextAudioRefs[i].current;
+        if (!audio || !nextAudio) continue;
+
+        const source = ctx.createMediaElementSource(audio);
+        const nextSource = ctx.createMediaElementSource(nextAudio);
+        
+        const mainGain = ctx.createGain();
+        const nextGain = ctx.createGain();
+        const duckGain = ctx.createGain();
+        const tabGain = ctx.createGain();
+
+        mainGain.gain.value = 0;
+        nextGain.gain.value = 0;
+        duckGain.gain.value = statesRef.current[i].isDucked ? dbToLinear(statesRef.current[i].duckingLevel) : 1;
+        tabGain.gain.value = statesRef.current[i].volume;
+        
+        source.connect(mainGain);
+        nextSource.connect(nextGain);
+        
+        mainGain.connect(duckGain);
+        nextGain.connect(duckGain);
+        duckGain.connect(tabGain);
+        tabGain.connect(limiter);
+
+        mainGainsRef.current[i] = mainGain;
+        nextGainsRef.current[i] = nextGain;
+        duckGainsRef.current[i] = duckGain;
+        tabGainsRef.current[i] = tabGain;
+      }
       
-      source.connect(mainGain);
-      nextSource.connect(nextGain);
-      
-      mainGain.connect(duckGain);
-      nextGain.connect(duckGain);
-      
-      duckGain.connect(limiter);
-      limiter.connect(ctx.destination);
+      // Test Tone Setup
+      const testToneOsc = ctx.createOscillator();
+      const testToneGain = ctx.createGain();
+      const testTonePanner = ctx.createStereoPanner();
+
+      testToneOsc.frequency.setValueAtTime(1000, ctx.currentTime);
+      testToneGain.gain.value = 0;
+      testTonePanner.pan.value = 0;
+
+      testToneOsc.connect(testToneGain);
+      testToneGain.connect(testTonePanner);
+      testTonePanner.connect(limiter);
+      testToneOsc.start();
+
+      limiter.connect(masterGain);
+      masterGain.connect(ctx.destination);
 
       audioContextRef.current = ctx;
-      mainGainRef.current = mainGain;
-      nextGainRef.current = nextGain;
-      duckGainRef.current = duckGain;
+      masterGainRef.current = masterGain;
       limiterRef.current = limiter;
+      testToneOscRef.current = testToneOsc;
+      testToneGainRef.current = testToneGain;
+      testTonePannerRef.current = testTonePanner;
     } catch (err) {
       console.warn("Audio Context init deferred.");
     }
-  }, [state.isDucked, state.duckingLevel]);
+  }, [dbToLinear]);
 
   // Handle Normalization Parameter Changes Real-time
   useEffect(() => {
-    if (mainGainRef.current && audioContextRef.current && state.isPlaying) {
+    const i = 0;
+    const state = states[i];
+    const playlist = playlists[i];
+    const currentTrack = playlist[state.currentTrackIndex];
+    if (mainGainsRef.current[i] && audioContextRef.current && state.isPlaying) {
       const now = audioContextRef.current.currentTime;
       const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
       const trim = currentTrack?.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
       const finalGain = baseGain * trim;
-      mainGainRef.current.gain.setTargetAtTime(finalGain, now, 0.1);
+      mainGainsRef.current[i]!.gain.setTargetAtTime(finalGain, now, 0.1);
     }
-  }, [state.isLoudnessNormalized, state.isPlaying, currentTrack, currentTrack?.volumeTrim, getNormalizationGain, TARGET_LUFS_GAIN]);
+  }, [states[0].isLoudnessNormalized, states[0].isPlaying, playlists[0][states[0].currentTrackIndex]?.volumeTrim, getNormalizationGain, TARGET_LUFS_GAIN]);
+
+  useEffect(() => {
+    const i = 1;
+    const state = states[i];
+    const playlist = playlists[i];
+    const currentTrack = playlist[state.currentTrackIndex];
+    if (mainGainsRef.current[i] && audioContextRef.current && state.isPlaying) {
+      const now = audioContextRef.current.currentTime;
+      const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
+      const trim = currentTrack?.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
+      const finalGain = baseGain * trim;
+      mainGainsRef.current[i]!.gain.setTargetAtTime(finalGain, now, 0.1);
+    }
+  }, [states[1].isLoudnessNormalized, states[1].isPlaying, playlists[1][states[1].currentTrackIndex]?.volumeTrim, getNormalizationGain, TARGET_LUFS_GAIN]);
+
+  useEffect(() => {
+    const i = 2;
+    const state = states[i];
+    const playlist = playlists[i];
+    const currentTrack = playlist[state.currentTrackIndex];
+    if (mainGainsRef.current[i] && audioContextRef.current && state.isPlaying) {
+      const now = audioContextRef.current.currentTime;
+      const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
+      const trim = currentTrack?.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
+      const finalGain = baseGain * trim;
+      mainGainsRef.current[i]!.gain.setTargetAtTime(finalGain, now, 0.1);
+    }
+  }, [states[2].isLoudnessNormalized, states[2].isPlaying, playlists[2][states[2].currentTrackIndex]?.volumeTrim, getNormalizationGain, TARGET_LUFS_GAIN]);
 
   // Handle Ducking Parameter Changes Real-time
   useEffect(() => {
-    if (duckGainRef.current && audioContextRef.current) {
+    const i = 0;
+    const state = states[i];
+    if (duckGainsRef.current[i] && audioContextRef.current) {
       const now = audioContextRef.current.currentTime;
       const targetGain = state.isDucked ? dbToLinear(state.duckingLevel) : 1;
-      duckGainRef.current.gain.cancelScheduledValues(now);
-      duckGainRef.current.gain.linearRampToValueAtTime(targetGain, now + 0.3);
+      duckGainsRef.current[i]!.gain.cancelScheduledValues(now);
+      duckGainsRef.current[i]!.gain.linearRampToValueAtTime(targetGain, now + 0.3);
     }
-  }, [state.isDucked, state.duckingLevel]);
+  }, [states[0].isDucked, states[0].duckingLevel]);
 
-  const toggleDucking = useCallback(() => {
-    setState(prev => ({ ...prev, isDucked: !prev.isDucked }));
+  useEffect(() => {
+    const i = 1;
+    const state = states[i];
+    if (duckGainsRef.current[i] && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      const targetGain = state.isDucked ? dbToLinear(state.duckingLevel) : 1;
+      duckGainsRef.current[i]!.gain.cancelScheduledValues(now);
+      duckGainsRef.current[i]!.gain.linearRampToValueAtTime(targetGain, now + 0.3);
+    }
+  }, [states[1].isDucked, states[1].duckingLevel]);
+
+  useEffect(() => {
+    const i = 2;
+    const state = states[i];
+    if (duckGainsRef.current[i] && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      const targetGain = state.isDucked ? dbToLinear(state.duckingLevel) : 1;
+      duckGainsRef.current[i]!.gain.cancelScheduledValues(now);
+      duckGainsRef.current[i]!.gain.linearRampToValueAtTime(targetGain, now + 0.3);
+    }
+  }, [states[2].isDucked, states[2].duckingLevel]);
+
+  // Handle Tab Volume Changes Real-time
+  useEffect(() => {
+    if (tabGainsRef.current[0] && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      tabGainsRef.current[0]!.gain.setTargetAtTime(states[0].volume, now, 0.05);
+    }
+  }, [states[0].volume]);
+
+  useEffect(() => {
+    if (tabGainsRef.current[1] && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      tabGainsRef.current[1]!.gain.setTargetAtTime(states[1].volume, now, 0.05);
+    }
+  }, [states[1].volume]);
+
+  useEffect(() => {
+    if (tabGainsRef.current[2] && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      tabGainsRef.current[2]!.gain.setTargetAtTime(states[2].volume, now, 0.05);
+    }
+  }, [states[2].volume]);
+
+  // Handle Test Tone Changes Real-time
+  useEffect(() => {
+    const i = 0;
+    const state = states[i];
+    if (testToneGainRef.current && testTonePannerRef.current && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      const targetGain = state.isTestToneOn ? dbToLinear(-18) : 0;
+      let targetPan = 0;
+      if (state.testToneChannel === 'left') targetPan = -1;
+      else if (state.testToneChannel === 'right') targetPan = 1;
+
+      testToneGainRef.current.gain.cancelScheduledValues(now);
+      testToneGainRef.current.gain.setTargetAtTime(targetGain, now, 0.05);
+
+      testTonePannerRef.current.pan.cancelScheduledValues(now);
+      testTonePannerRef.current.pan.setTargetAtTime(targetPan, now, 0.05);
+    }
+  }, [states[0].isTestToneOn, states[0].testToneChannel]);
+
+  useEffect(() => {
+    const i = 1;
+    const state = states[i];
+    if (testToneGainRef.current && testTonePannerRef.current && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      const targetGain = state.isTestToneOn ? dbToLinear(-18) : 0;
+      let targetPan = 0;
+      if (state.testToneChannel === 'left') targetPan = -1;
+      else if (state.testToneChannel === 'right') targetPan = 1;
+
+      testToneGainRef.current.gain.cancelScheduledValues(now);
+      testToneGainRef.current.gain.setTargetAtTime(targetGain, now, 0.05);
+
+      testTonePannerRef.current.pan.cancelScheduledValues(now);
+      testTonePannerRef.current.pan.setTargetAtTime(targetPan, now, 0.05);
+    }
+  }, [states[1].isTestToneOn, states[1].testToneChannel]);
+
+  useEffect(() => {
+    const i = 2;
+    const state = states[i];
+    if (testToneGainRef.current && testTonePannerRef.current && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      const targetGain = state.isTestToneOn ? dbToLinear(-18) : 0;
+      let targetPan = 0;
+      if (state.testToneChannel === 'left') targetPan = -1;
+      else if (state.testToneChannel === 'right') targetPan = 1;
+
+      testToneGainRef.current.gain.cancelScheduledValues(now);
+      testToneGainRef.current.gain.setTargetAtTime(targetGain, now, 0.05);
+
+      testTonePannerRef.current.pan.cancelScheduledValues(now);
+      testTonePannerRef.current.pan.setTargetAtTime(targetPan, now, 0.05);
+    }
+  }, [states[2].isTestToneOn, states[2].testToneChannel]);
+
+  const toggleDucking = useCallback((tabIndex?: number) => {
+    const tab = tabIndex !== undefined ? tabIndex : activeTabRef.current;
+    setStates(prev => {
+      const next = [...prev];
+      next[tab] = { ...next[tab], isDucked: !next[tab].isDucked };
+      return next;
+    });
   }, []);
 
   const toggleShuffle = useCallback(() => {
-    setState(prev => ({ ...prev, isShuffle: !prev.isShuffle }));
+    const tab = activeTabRef.current;
+    setStates(prev => {
+      const next = [...prev];
+      next[tab] = { ...next[tab], isShuffle: !next[tab].isShuffle };
+      return next;
+    });
   }, []);
 
   const toggleTrackPlaybackMode = useCallback((index: number) => {
-    setPlaylist(prev => {
-      const newPlaylist = [...prev];
+    const tab = activeTabRef.current;
+    setPlaylists(prev => {
+      const next = [...prev];
+      const newPlaylist = [...next[tab]];
       const track = newPlaylist[index];
       const modes = [PlaybackMode.FOLLOW, PlaybackMode.ADVANCE, PlaybackMode.STOP];
       const currentIndex = modes.indexOf(track.playbackMode);
       const nextIndex = (currentIndex + 1) % modes.length;
       newPlaylist[index] = { ...track, playbackMode: modes[nextIndex] };
-      return newPlaylist;
+      next[tab] = newPlaylist;
+      return next;
     });
   }, []);
 
   const toggleTrackLoop = useCallback((index: number) => {
-    setPlaylist(prev => {
-      const newPlaylist = [...prev];
+    const tab = activeTabRef.current;
+    setPlaylists(prev => {
+      const next = [...prev];
+      const newPlaylist = [...next[tab]];
       const track = newPlaylist[index];
       newPlaylist[index] = { ...track, isLooping: !track.isLooping };
-      return newPlaylist;
+      next[tab] = newPlaylist;
+      return next;
     });
   }, []);
 
   const removeTrack = useCallback((index: number) => {
-    setPlaylist(prev => {
-      const newPlaylist = [...prev];
+    const tab = activeTabRef.current;
+    setPlaylists(prev => {
+      const next = [...prev];
+      const newPlaylist = [...next[tab]];
       const removedTrack = newPlaylist.splice(index, 1)[0];
       if (removedTrack?.url.startsWith('blob:')) {
         URL.revokeObjectURL(removedTrack.url);
       }
-      return newPlaylist;
+      next[tab] = newPlaylist;
+      return next;
     });
 
     // Adjust current and selected indices
-    setState(prev => {
-      let { currentTrackIndex, selectedTrackIndex, isPlaying } = prev;
+    setStates(prev => {
+      const next = [...prev];
+      let { currentTrackIndex, selectedTrackIndex, isPlaying } = next[tab];
+      const playlist = playlistsRef.current[tab];
       
       if (index === currentTrackIndex) {
         // If we removed the currently playing track, stop playback or move to next
         isPlaying = false;
         const stopAudio = async () => {
-          if (audioRef.current) {
+          if (audioRefs[tab].current) {
             // Anti-click fade out
-            if (mainGainRef.current && audioContextRef.current) {
+            if (mainGainsRef.current[tab] && audioContextRef.current) {
               const now = audioContextRef.current.currentTime;
-              mainGainRef.current.gain.cancelScheduledValues(now);
-              mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
-              mainGainRef.current.gain.setTargetAtTime(0, now, 0.015);
+              mainGainsRef.current[tab]!.gain.cancelScheduledValues(now);
+              mainGainsRef.current[tab]!.gain.setValueAtTime(mainGainsRef.current[tab]!.gain.value, now);
+              mainGainsRef.current[tab]!.gain.setTargetAtTime(0, now, 0.015);
               await new Promise(resolve => setTimeout(resolve, 50));
             }
-            if (playPromiseRef.current) {
-              try { await playPromiseRef.current; } catch (e) {}
+            if (playPromiseRefs.current[tab]) {
+              try { await playPromiseRefs.current[tab]; } catch (e) {}
             }
-            audioRef.current.pause();
-            audioRef.current.src = '';
+            audioRefs[tab].current!.pause();
+            audioRefs[tab].current!.src = '';
           }
         };
         stopAudio();
@@ -210,9 +445,10 @@ const App: React.FC = () => {
         selectedTrackIndex--;
       }
 
-      return { ...prev, currentTrackIndex, selectedTrackIndex, isPlaying };
+      next[tab] = { ...next[tab], currentTrackIndex, selectedTrackIndex, isPlaying };
+      return next;
     });
-  }, [playlist.length]);
+  }, []);
 
   const saveSession = () => {
     const sessionData = {
@@ -254,7 +490,11 @@ const App: React.FC = () => {
             isAnalyzing: false,
             cover: t.cover || ''
           }));
-          setPlaylist(restoredTracks);
+          setPlaylists(prev => {
+            const next = [...prev];
+            next[activeTabRef.current] = restoredTracks;
+            return next;
+          });
           setLoadError("Session metadata loaded. Please re-add audio files to enable playback.");
         }
       } catch (err) {
@@ -265,6 +505,8 @@ const App: React.FC = () => {
   };
 
   const clearPlaylist = useCallback(() => {
+    const tab = activeTabRef.current;
+    const playlist = playlistsRef.current[tab];
     if (playlist.length > 0 && !window.confirm('Are you sure you want to clear the entire playlist?')) {
       return;
     }
@@ -272,30 +514,202 @@ const App: React.FC = () => {
     playlist.forEach(track => {
       if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
     });
-    setPlaylist([]);
-    setState(prev => ({ ...prev, currentTrackIndex: 0, selectedTrackIndex: 0, isPlaying: false, currentTime: 0, progress: 0 }));
+    setPlaylists(prev => {
+      const next = [...prev];
+      next[tab] = [];
+      return next;
+    });
+    setStates(prev => {
+      const next = [...prev];
+      next[tab] = { ...next[tab], currentTrackIndex: 0, selectedTrackIndex: 0, isPlaying: false, currentTime: 0, progress: 0 };
+      return next;
+    });
     
     const stopAudio = async () => {
-      if (audioRef.current) {
+      if (audioRefs[tab].current) {
         // Anti-click fade out
-        if (mainGainRef.current && audioContextRef.current) {
+        if (mainGainsRef.current[tab] && audioContextRef.current) {
           const now = audioContextRef.current.currentTime;
-          mainGainRef.current.gain.cancelScheduledValues(now);
-          mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
-          mainGainRef.current.gain.setTargetAtTime(0, now, 0.015);
+          mainGainsRef.current[tab]!.gain.cancelScheduledValues(now);
+          mainGainsRef.current[tab]!.gain.setValueAtTime(mainGainsRef.current[tab]!.gain.value, now);
+          mainGainsRef.current[tab]!.gain.setTargetAtTime(0, now, 0.015);
           await new Promise(resolve => setTimeout(resolve, 50));
         }
-        if (playPromiseRef.current) {
-          try { await playPromiseRef.current; } catch (e) {}
+        if (playPromiseRefs.current[tab]) {
+          try { await playPromiseRefs.current[tab]; } catch (e) {}
         }
-        audioRef.current.pause();
-        audioRef.current.src = '';
+        audioRefs[tab].current!.pause();
+        audioRefs[tab].current!.src = '';
       }
     };
     stopAudio();
     
     setTimeout(() => setIsClearing(false), 500);
-  }, [playlist]);
+  }, []);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const analyzeLevel = useCallback(async (url: string): Promise<{ rms: number, waveform: number[], bpm?: number, firstBeat?: number }> => {
+    let audioContext: AudioContext | null = null;
+    try {
+      const response = await fetch(url);
+      const arrayBuffer = await response.arrayBuffer();
+      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      const data = audioBuffer.getChannelData(0);
+      const sampleRate = audioBuffer.sampleRate;
+      
+      let sum = 0;
+      const step = Math.max(1, Math.floor(data.length / 10000));
+      let count = 0;
+      for (let i = 0; i < data.length; i += step) {
+        sum += data[i] * data[i];
+        count++;
+      }
+      const rms = Math.sqrt(sum / count);
+
+      // Waveform calculation (100 points)
+      const waveform: number[] = [];
+      const waveformPoints = 100;
+      const waveformStep = Math.floor(data.length / waveformPoints);
+      for (let i = 0; i < waveformPoints; i++) {
+        let max = 0;
+        for (let j = 0; j < waveformStep; j++) {
+          const val = Math.abs(data[i * waveformStep + j]);
+          if (val > max) max = val;
+        }
+        waveform.push(max);
+      }
+
+      // --- BPM & First Beat Detection ---
+      // 1. Find the first significant peak (threshold 0.2)
+      let firstBeat = 0;
+      const threshold = 0.2;
+      for (let i = 0; i < data.length; i++) {
+        if (Math.abs(data[i]) > threshold) {
+          firstBeat = i / sampleRate;
+          break;
+        }
+      }
+
+      // 2. Simple BPM detection by peak counting
+      let maxVal = 0;
+      for (let i = 0; i < data.length; i += 100) {
+        if (Math.abs(data[i]) > maxVal) maxVal = Math.abs(data[i]);
+      }
+      const peakThreshold = maxVal * 0.6;
+      const peaks: number[] = [];
+      let lastPeakTime = -1;
+      const minPeakDistance = 0.3; // Minimum 0.3s between beats (~200 BPM max)
+
+      for (let i = 0; i < data.length; i += 100) {
+        const time = i / sampleRate;
+        if (Math.abs(data[i]) > peakThreshold && (time - lastPeakTime) > minPeakDistance) {
+          peaks.push(time);
+          lastPeakTime = time;
+        }
+      }
+
+      let bpm = 0;
+      if (peaks.length > 2) {
+        const intervals: number[] = [];
+        for (let i = 1; i < peaks.length; i++) {
+          intervals.push(peaks[i] - peaks[i - 1]);
+        }
+        // Median interval for stability
+        intervals.sort((a, b) => a - b);
+        const medianInterval = intervals[Math.floor(intervals.length / 2)];
+        bpm = Math.round(60 / medianInterval);
+        // Clamp to reasonable range
+        if (bpm < 60) bpm *= 2;
+        if (bpm > 200) bpm /= 2;
+      }
+
+      await audioContext.close();
+      return { rms, waveform, bpm: bpm || 120, firstBeat };
+    } catch (e) {
+      if (audioContext) await audioContext.close();
+      return { rms: 0.1, waveform: new Array(100).fill(0.1), bpm: 120, firstBeat: 0 };
+    }
+  }, []);
+
+  // Analysis Worker Effect
+  useEffect(() => {
+    if (isWorkerBusy || analysisQueue.length === 0) return;
+
+  const processQueue = async () => {
+      setIsWorkerBusy(true);
+      const trackId = analysisQueue[0];
+      
+      // Find track in any playlist
+      let track: Track | undefined;
+      let pIdx = -1;
+      for (let i = 0; i < NUM_PLAYLISTS; i++) {
+        track = playlists[i].find(t => t.id === trackId);
+        if (track) {
+          pIdx = i;
+          break;
+        }
+      }
+
+      if (!track || pIdx === -1) {
+        setAnalysisQueue(prev => prev.slice(1));
+        setIsWorkerBusy(false);
+        return;
+      }
+
+      console.log(`Analyzing track: ${track.title} (${analysisQueue.length} remaining)`);
+
+      try {
+        const [metadata, analysis] = await Promise.all([
+          new Promise<{ duration: number, durationStr: string }>((resolve) => {
+            const tempAudio = new Audio();
+            tempAudio.src = track!.url;
+            tempAudio.onloadedmetadata = () => resolve({
+              duration: tempAudio.duration,
+              durationStr: formatTime(tempAudio.duration)
+            });
+            tempAudio.onerror = () => resolve({ duration: 0, durationStr: "--:--" });
+            setTimeout(() => resolve({ duration: 0, durationStr: "--:--" }), 5000);
+          }),
+          analyzeLevel(track.url)
+        ]);
+
+        setPlaylists(prev => {
+          const next = [...prev];
+          next[pIdx] = next[pIdx].map(t => t.id === trackId ? { 
+            ...t, 
+            duration: metadata.durationStr, 
+            fullDuration: metadata.duration,
+            averageLevel: analysis.rms, 
+            waveformData: analysis.waveform,
+            endTime: metadata.duration,
+            startTime: analysis.firstBeat || 0,
+            bpm: analysis.bpm,
+            firstBeat: analysis.firstBeat,
+            isAnalyzing: false 
+          } : t);
+          return next;
+        });
+      } catch (e) {
+        console.error("Error analyzing", track.title, e);
+        setPlaylists(prev => {
+          const next = [...prev];
+          next[pIdx] = next[pIdx].map(t => t.id === trackId ? { ...t, isAnalyzing: false } : t);
+          return next;
+        });
+      } finally {
+        setAnalysisQueue(prev => prev.slice(1));
+        setIsWorkerBusy(false);
+      }
+    };
+
+    processQueue();
+  }, [analysisQueue, isWorkerBusy, playlist, analyzeLevel]);
 
   const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -309,97 +723,6 @@ const App: React.FC = () => {
       setLoadError("No audio files found.");
       return;
     }
-
-    const formatTime = (seconds: number) => {
-      const mins = Math.floor(seconds / 60);
-      const secs = Math.floor(seconds % 60);
-      return `${mins}:${secs.toString().padStart(2, '0')}`;
-    };
-
-    const analyzeLevel = async (url: string): Promise<{ rms: number, waveform: number[], bpm?: number, firstBeat?: number }> => {
-      let audioContext: AudioContext | null = null;
-      try {
-        const response = await fetch(url);
-        const arrayBuffer = await response.arrayBuffer();
-        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        const data = audioBuffer.getChannelData(0);
-        const sampleRate = audioBuffer.sampleRate;
-        
-        let sum = 0;
-        const step = Math.max(1, Math.floor(data.length / 10000));
-        let count = 0;
-        for (let i = 0; i < data.length; i += step) {
-          sum += data[i] * data[i];
-          count++;
-        }
-        const rms = Math.sqrt(sum / count);
-
-        // Waveform calculation (100 points)
-        const waveform: number[] = [];
-        const waveformPoints = 100;
-        const waveformStep = Math.floor(data.length / waveformPoints);
-        for (let i = 0; i < waveformPoints; i++) {
-          let max = 0;
-          for (let j = 0; j < waveformStep; j++) {
-            const val = Math.abs(data[i * waveformStep + j]);
-            if (val > max) max = val;
-          }
-          waveform.push(max);
-        }
-
-        // --- BPM & First Beat Detection ---
-        // 1. Find the first significant peak (threshold 0.2)
-        let firstBeat = 0;
-        const threshold = 0.2;
-        for (let i = 0; i < data.length; i++) {
-          if (Math.abs(data[i]) > threshold) {
-            firstBeat = i / sampleRate;
-            break;
-          }
-        }
-
-        // 2. Simple BPM detection by peak counting
-        // We'll look for peaks above a dynamic threshold (0.6 * max)
-        let maxVal = 0;
-        for (let i = 0; i < data.length; i += 100) {
-          if (Math.abs(data[i]) > maxVal) maxVal = Math.abs(data[i]);
-        }
-        const peakThreshold = maxVal * 0.6;
-        const peaks: number[] = [];
-        let lastPeakTime = -1;
-        const minPeakDistance = 0.3; // Minimum 0.3s between beats (~200 BPM max)
-
-        for (let i = 0; i < data.length; i += 100) {
-          const time = i / sampleRate;
-          if (Math.abs(data[i]) > peakThreshold && (time - lastPeakTime) > minPeakDistance) {
-            peaks.push(time);
-            lastPeakTime = time;
-          }
-        }
-
-        let bpm = 0;
-        if (peaks.length > 2) {
-          const intervals: number[] = [];
-          for (let i = 1; i < peaks.length; i++) {
-            intervals.push(peaks[i] - peaks[i - 1]);
-          }
-          // Median interval for stability
-          intervals.sort((a, b) => a - b);
-          const medianInterval = intervals[Math.floor(intervals.length / 2)];
-          bpm = Math.round(60 / medianInterval);
-          // Clamp to reasonable range
-          if (bpm < 60) bpm *= 2;
-          if (bpm > 200) bpm /= 2;
-        }
-
-        await audioContext.close();
-        return { rms, waveform, bpm: bpm || 120, firstBeat };
-      } catch (e) {
-        if (audioContext) await audioContext.close();
-        return { rms: 0.1, waveform: new Array(100).fill(0.1), bpm: 120, firstBeat: 0 };
-      }
-    };
 
     const newTracks: Track[] = audioFiles.map((file, index) => {
       const url = URL.createObjectURL(file);
@@ -422,43 +745,13 @@ const App: React.FC = () => {
       };
     });
 
-    setPlaylist(prev => [...prev, ...newTracks]);
-    setLoadError(null);
-
-    // Asynchronously analyze each track
-    newTracks.forEach(async (track, idx) => {
-      try {
-        const [metadata, analysis] = await Promise.all([
-          new Promise<{ duration: number, durationStr: string }>((resolve) => {
-            const tempAudio = new Audio();
-            tempAudio.src = track.url;
-            tempAudio.onloadedmetadata = () => resolve({
-              duration: tempAudio.duration,
-              durationStr: formatTime(tempAudio.duration)
-            });
-            tempAudio.onerror = () => resolve({ duration: 0, durationStr: "--:--" });
-            setTimeout(() => resolve({ duration: 0, durationStr: "--:--" }), 5000);
-          }),
-          analyzeLevel(track.url)
-        ]);
-
-        setPlaylist(prev => prev.map(t => t.id === track.id ? { 
-          ...t, 
-          duration: metadata.durationStr, 
-          fullDuration: metadata.duration,
-          averageLevel: analysis.rms, 
-          waveformData: analysis.waveform,
-          endTime: metadata.duration,
-          startTime: analysis.firstBeat || 0, // Automatically set start to first peak
-          bpm: analysis.bpm,
-          firstBeat: analysis.firstBeat,
-          isAnalyzing: false 
-        } : t));
-      } catch (e) {
-        console.error("Error analyzing", track.title);
-        setPlaylist(prev => prev.map(t => t.id === track.id ? { ...t, isAnalyzing: false } : t));
-      }
+    setPlaylists(prev => {
+      const next = [...prev];
+      next[activeTabRef.current] = [...next[activeTabRef.current], ...newTracks];
+      return next;
     });
+    setAnalysisQueue(prev => [...prev, ...newTracks.map(t => t.id)]);
+    setLoadError(null);
   };
 
   // Update maxAverageLevel whenever playlist changes
@@ -469,34 +762,58 @@ const App: React.FC = () => {
     }
   }, [playlist]);
 
-  const switchTrack = useCallback(async (index: number) => {
-    if (state.isFading || isCrossfadingRef.current) return;
+  const switchTrack = useCallback(async (index: number, tabIndex?: number) => {
+    const tab = tabIndex !== undefined ? tabIndex : activeTabRef.current;
+    // Cancel any ongoing fade out
+    if (fadeIntervalRefs.current[tab]) {
+      clearTimeout(fadeIntervalRefs.current[tab]!);
+      fadeIntervalRefs.current[tab] = null;
+    }
+
+    // Cancel any ongoing crossfade
+    if (crossfadeTimeoutRefs.current[tab]) {
+      clearTimeout(crossfadeTimeoutRefs.current[tab]!);
+      crossfadeTimeoutRefs.current[tab] = null;
+    }
+    if (nextAudioRefs[tab].current) {
+      nextAudioRefs[tab].current!.pause();
+    }
+    isCrossfadingRefs.current[tab] = false;
 
     // Fade out current track if playing
-    if (state.isPlaying && mainGainRef.current && audioContextRef.current) {
+    if (statesRef.current[tab].isPlaying && mainGainsRef.current[tab] && audioContextRef.current) {
       const now = audioContextRef.current.currentTime;
-      mainGainRef.current.gain.cancelScheduledValues(now);
-      mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
-      mainGainRef.current.gain.setTargetAtTime(0, now, 0.015); // Super short 15ms fade
+      mainGainsRef.current[tab]!.gain.cancelScheduledValues(now);
+      mainGainsRef.current[tab]!.gain.setValueAtTime(mainGainsRef.current[tab]!.gain.value, now);
+      mainGainsRef.current[tab]!.gain.setTargetAtTime(0, now, 0.015); // Super short 15ms fade
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    const targetTrack = playlist[index];
+    const targetTrack = playlistsRef.current[tab][index];
     if (!targetTrack) return;
 
-    setState(prev => ({
-      ...prev,
-      currentTrackIndex: index,
-      selectedTrackIndex: index,
-      currentTime: targetTrack.startTime || 0,
-      progress: 0,
-      isPlaying: true,
-      isFading: false
-    }));
-  }, [state.isPlaying, state.isFading, playlist]);
+    setStates(prev => {
+      const next = [...prev];
+      next[tab] = {
+        ...next[tab],
+        currentTrackIndex: index,
+        selectedTrackIndex: index,
+        currentTime: targetTrack.startTime || 0,
+        progress: 0,
+        isPlaying: true,
+        isFading: false
+      };
+      return next;
+    });
+  }, []);
 
-  const handlePlayPause = useCallback(async () => {
-    if (!audioRef.current || playlist.length === 0) return;
+  const handlePlayPause = useCallback(async (tabIndex?: number) => {
+    const tab = tabIndex !== undefined ? tabIndex : activeTabRef.current;
+    const audio = audioRefs[tab].current;
+    const playlist = playlistsRef.current[tab];
+    const state = statesRef.current[tab];
+
+    if (!audio || playlist.length === 0) return;
     
     initAudioEngine();
     if (audioContextRef.current?.state === 'suspended') {
@@ -505,48 +822,105 @@ const App: React.FC = () => {
 
     // If selected track is different from current playing track, switch to it immediately
     if (state.selectedTrackIndex !== state.currentTrackIndex) {
-      if (fadeIntervalRef.current) {
-        clearTimeout(fadeIntervalRef.current);
-        fadeIntervalRef.current = null;
+      if (fadeIntervalRefs.current[tab]) {
+        clearTimeout(fadeIntervalRefs.current[tab]!);
+        fadeIntervalRefs.current[tab] = null;
       }
       
-      switchTrack(state.selectedTrackIndex);
+      switchTrack(state.selectedTrackIndex, tab);
       return;
     }
 
-    if (state.isPlaying) {
-      // Start smooth pause
-      if (mainGainRef.current && audioContextRef.current) {
-        const now = audioContextRef.current.currentTime;
-        mainGainRef.current.gain.cancelScheduledValues(now);
-        mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
-        mainGainRef.current.gain.setTargetAtTime(0, now, 0.015); // Super short 15ms fade
+    if (state.isPlaying || isCrossfadingRefs.current[tab]) {
+      if (state.isFading || isCrossfadingRefs.current[tab]) {
+        // Cancel any ongoing fade out
+        if (fadeIntervalRefs.current[tab]) {
+          clearTimeout(fadeIntervalRefs.current[tab]!);
+          fadeIntervalRefs.current[tab] = null;
+        }
+
+        // Cancel any ongoing crossfade
+        if (crossfadeTimeoutRefs.current[tab]) {
+          clearTimeout(crossfadeTimeoutRefs.current[tab]!);
+          crossfadeTimeoutRefs.current[tab] = null;
+        }
         
-        // We set isPlaying to false immediately to prevent race conditions
-        setState(prev => ({ ...prev, isPlaying: false }));
+        if (isCrossfadingRefs.current[tab]) {
+          // If we were crossfading, we need to make sure the main audio is at full volume
+          // and the next audio is stopped.
+          if (mainGainsRef.current[tab] && audioContextRef.current) {
+            const now = audioContextRef.current.currentTime;
+            const currentTrack = playlist[state.currentTrackIndex];
+            const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
+            const trim = currentTrack?.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
+            const finalGain = baseGain * trim;
+            mainGainsRef.current[tab]!.gain.cancelScheduledValues(now);
+            mainGainsRef.current[tab]!.gain.setTargetAtTime(finalGain, now, 0.1);
+          }
+          if (nextAudioRefs[tab].current) {
+            nextAudioRefs[tab].current!.pause();
+          }
+          isCrossfadingRefs.current[tab] = false;
+        }
+
+        setStates(prev => {
+          const next = [...prev];
+          next[tab] = { ...next[tab], isPlaying: true, isFading: false };
+          return next;
+        });
+        return;
+      }
+      // Start smooth pause
+      if (mainGainsRef.current[tab] && audioContextRef.current) {
+        const now = audioContextRef.current.currentTime;
+        mainGainsRef.current[tab]!.gain.cancelScheduledValues(now);
+        mainGainsRef.current[tab]!.gain.setValueAtTime(mainGainsRef.current[tab]!.gain.value, now);
+        mainGainsRef.current[tab]!.gain.setTargetAtTime(0, now, 0.015); // Super short 15ms fade
+        
+        setStates(prev => {
+          const next = [...prev];
+          next[tab] = { ...next[tab], isPlaying: false };
+          return next;
+        });
       } else {
-        setState(prev => ({ ...prev, isPlaying: false }));
+        setStates(prev => {
+          const next = [...prev];
+          next[tab] = { ...next[tab], isPlaying: false };
+          return next;
+        });
       }
     } else {
       // Play
-      if (fadeIntervalRef.current) {
-        clearTimeout(fadeIntervalRef.current);
-        fadeIntervalRef.current = null;
+      if (fadeIntervalRefs.current[tab]) {
+        clearTimeout(fadeIntervalRefs.current[tab]!);
+        fadeIntervalRefs.current[tab] = null;
       }
       
       // Ensure we start from silence for a smooth fade-in
-      if (mainGainRef.current && audioContextRef.current) {
+      if (mainGainsRef.current[tab] && audioContextRef.current) {
         const now = audioContextRef.current.currentTime;
-        mainGainRef.current.gain.cancelScheduledValues(now);
-        mainGainRef.current.gain.setValueAtTime(0, now);
+        mainGainsRef.current[tab]!.gain.cancelScheduledValues(now);
+        mainGainsRef.current[tab]!.gain.setValueAtTime(0, now);
       }
       
-      setState(prev => ({ ...prev, isPlaying: true, isFading: false }));
+      setStates(prev => {
+        const next = [...prev];
+        next[tab] = { ...next[tab], isPlaying: true, isFading: false };
+        return next;
+      });
     }
-  }, [state.isPlaying, state.isFading, state.selectedTrackIndex, state.currentTrackIndex, initAudioEngine, playlist]);
+  }, [initAudioEngine, getNormalizationGain, TARGET_LUFS_GAIN, switchTrack]);
 
-  const startCrossfade = useCallback(async () => {
-    if (isCrossfadingRef.current || !audioRef.current || !nextAudioRef.current || !mainGainRef.current || !nextGainRef.current || !audioContextRef.current) return;
+  const startCrossfade = useCallback(async (tabIndex?: number) => {
+    const tab = tabIndex !== undefined ? tabIndex : activeTabRef.current;
+    const audio = audioRefs[tab].current;
+    const nextAudio = nextAudioRefs[tab].current;
+    const mainGain = mainGainsRef.current[tab];
+    const nextGain = nextGainsRef.current[tab];
+    const playlist = playlistsRef.current[tab];
+    const state = statesRef.current[tab];
+
+    if (isCrossfadingRefs.current[tab] || !audio || !nextAudio || !mainGain || !nextGain || !audioContextRef.current) return;
     
     const currentTrack = playlist[state.currentTrackIndex];
     const isLooping = currentTrack.isLooping;
@@ -560,7 +934,7 @@ const App: React.FC = () => {
       return;
     }
     
-    isCrossfadingRef.current = true;
+    isCrossfadingRefs.current[tab] = true;
     
     const ctx = audioContextRef.current;
     const now = ctx.currentTime;
@@ -570,142 +944,207 @@ const App: React.FC = () => {
     let nextStartTime = nextTrack.startTime || 0;
     if (isLooping && nextTrack.bpm && nextTrack.bpm > 0) {
       const beatInterval = 60 / nextTrack.bpm;
-      const currentPos = audioRef.current.currentTime;
+      const currentPos = audio.currentTime;
       const elapsedSinceStart = currentPos - (currentTrack.startTime || 0);
       
-      // We want to jump to a point that maintains the beat phase
-      // For a simple loop, we just go to startTime, but we can nudge it
-      // to ensure the transition is on a beat.
-      // Actually, if the loop length is a multiple of beats, it's perfect.
-      // If not, we nudge the start time of the NEXT iteration to align.
       const beatsPlayed = elapsedSinceStart / beatInterval;
       const fractionalBeat = beatsPlayed % 1;
-      // If we are at 0.9 of a beat, we should start the next one at 0.9 of a beat too
-      // to maintain the rhythm.
       nextStartTime = (nextTrack.startTime || 0) + (fractionalBeat * beatInterval);
     }
 
     // Prepare next audio
-    nextAudioRef.current.src = nextTrack.url;
-    nextAudioRef.current.load();
+    nextAudio.src = nextTrack.url;
+    nextAudio.load();
     
     // Fade out current
-    mainGainRef.current.gain.cancelScheduledValues(now);
-    mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
-    mainGainRef.current.gain.setTargetAtTime(0, now, CROSSFADE_DURATION / 3);
+    mainGain.gain.cancelScheduledValues(now);
+    mainGain.gain.setValueAtTime(mainGain.gain.value, now);
+    mainGain.gain.setTargetAtTime(0, now, CROSSFADE_DURATION / 3);
     
     // Fade in next
-    nextGainRef.current.gain.cancelScheduledValues(now);
-    nextGainRef.current.gain.setValueAtTime(0, now);
-    nextGainRef.current.gain.setTargetAtTime(baseGain, now, CROSSFADE_DURATION / 3);
+    nextGain.gain.cancelScheduledValues(now);
+    nextGain.gain.setValueAtTime(0, now);
+    nextGain.gain.setTargetAtTime(baseGain, now, CROSSFADE_DURATION / 3);
     
     try {
       // Wait for next audio to be ready
-      if (nextAudioRef.current.readyState < 2) {
+      if (nextAudio.readyState < 2) {
         await new Promise((resolve) => {
           const onCanPlay = () => {
-            nextAudioRef.current?.removeEventListener('canplay', onCanPlay);
+            nextAudio?.removeEventListener('canplay', onCanPlay);
             resolve(null);
           };
-          nextAudioRef.current?.addEventListener('canplay', onCanPlay);
+          nextAudio?.addEventListener('canplay', onCanPlay);
           setTimeout(resolve, 2000);
         });
       }
-      if (nextAudioRef.current) {
-        nextAudioRef.current.currentTime = nextStartTime;
+      if (nextAudio) {
+        nextAudio.currentTime = nextStartTime;
       }
-      await nextAudioRef.current.play();
+      await nextAudio.play();
     } catch (e) {
       console.error("Crossfade play failed", e);
     }
     
-    setTimeout(async () => {
+    crossfadeTimeoutRefs.current[tab] = window.setTimeout(async () => {
       if (!isMountedRef.current) return;
       console.log(`Crossfade timeout completed. Syncing audio elements...`);
-      if (audioRef.current && nextAudioRef.current && mainGainRef.current && nextGainRef.current) {
+      const currentAudio = audioRefs[tab].current;
+      const currentNextAudio = nextAudioRefs[tab].current;
+      const currentMainGain = mainGainsRef.current[tab];
+      const currentNextGain = nextGainsRef.current[tab];
+
+      if (currentAudio && currentNextAudio && currentMainGain && currentNextGain) {
         try {
-          // Instead of swapping refs (which React breaks), we sync the main audio to the next one
-          audioRef.current.pause();
-          console.log(`Main audio paused. Syncing to: ${nextTrack.url}`);
-          audioRef.current.src = nextTrack.url;
-          audioRef.current.load();
+          currentAudio.pause();
+          currentAudio.src = nextTrack.url;
+          currentAudio.load();
           
-          // Wait for metadata before setting currentTime
           await new Promise((resolve) => {
             const onLoaded = () => {
-              audioRef.current?.removeEventListener('loadedmetadata', onLoaded);
+              currentAudio?.removeEventListener('loadedmetadata', onLoaded);
               resolve(null);
             };
-            audioRef.current?.addEventListener('loadedmetadata', onLoaded);
+            currentAudio?.addEventListener('loadedmetadata', onLoaded);
             setTimeout(resolve, 1000); // Fallback
           });
 
           if (!isMountedRef.current) return;
-          audioRef.current.currentTime = nextAudioRef.current.currentTime;
-          lastLoadedUrlRef.current = nextTrack.url;
+          currentAudio.currentTime = currentNextAudio.currentTime;
+          lastLoadedUrlRefs.current[tab] = nextTrack.url;
           
           // Reset gains to primary
           const currentNow = audioContextRef.current?.currentTime || 0;
-          mainGainRef.current.gain.cancelScheduledValues(currentNow);
-          mainGainRef.current.gain.setValueAtTime(baseGain, currentNow);
-          nextGainRef.current.gain.cancelScheduledValues(currentNow);
-          nextGainRef.current.gain.setValueAtTime(0, currentNow);
+          currentMainGain.gain.cancelScheduledValues(currentNow);
+          currentMainGain.gain.setValueAtTime(baseGain, currentNow);
+          currentNextGain.gain.cancelScheduledValues(currentNow);
+          currentNextGain.gain.setValueAtTime(0, currentNow);
           
-          console.log(`Starting playback of synced main audio...`);
-          await audioRef.current.play();
-          console.log(`Main audio playback started successfully.`);
-          nextAudioRef.current.pause();
+          await currentAudio.play();
+          currentNextAudio.pause();
           
-          setState(prev => ({ ...prev, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: audioRef.current?.currentTime || 0 }));
+          setStates(prev => {
+            const next = [...prev];
+            next[tab] = { 
+              ...next[tab], 
+              currentTrackIndex: nextIndex, 
+              selectedTrackIndex: nextIndex, 
+              currentTime: currentAudio?.currentTime || 0 
+            };
+            return next;
+          });
         } catch (err) {
           console.error("Error during crossfade sync/play:", err);
           setLoadError(`Crossfade failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
         } finally {
-          isCrossfadingRef.current = false;
+          isCrossfadingRefs.current[tab] = false;
+          crossfadeTimeoutRefs.current[tab] = null;
         }
       }
-    }, CROSSFADE_DURATION * 1000);
-  }, [state.isShuffle, state.currentTrackIndex, state.isLoudnessNormalized, playlist, getNormalizationGain, TARGET_LUFS_GAIN]);
+    }, CROSSFADE_DURATION * 1000) as unknown as number;
+  }, [getNormalizationGain, TARGET_LUFS_GAIN]);
 
-  const startFadeOut = useCallback(() => {
-    if (!audioRef.current || !mainGainRef.current || !audioContextRef.current || state.isFading || !state.isPlaying) return;
+  const cancelFadeOut = useCallback((tabIndex?: number) => {
+    const tab = tabIndex !== undefined ? tabIndex : activeTabRef.current;
+    const state = statesRef.current[tab];
+    const playlist = playlistsRef.current[tab];
+    const currentTrack = playlist[state.currentTrackIndex];
+    const mainGain = mainGainsRef.current[tab];
 
-    setState(prev => ({ ...prev, isFading: true }));
+    if (!state.isFading || !mainGain || !audioContextRef.current) return;
+
+    if (fadeIntervalRefs.current[tab]) {
+      clearTimeout(fadeIntervalRefs.current[tab]!);
+      fadeIntervalRefs.current[tab] = null;
+    }
+
     const ctx = audioContextRef.current;
-    const gainNode = mainGainRef.current;
+    const now = ctx.currentTime;
+
+    const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
+    const trim = currentTrack?.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
+    const finalGain = baseGain * trim;
+
+    mainGain.gain.cancelScheduledValues(now);
+    mainGain.gain.setValueAtTime(mainGain.gain.value, now);
+    mainGain.gain.setTargetAtTime(finalGain, now, 0.1); // Quick restore
+
+    setStates(prev => {
+      const next = [...prev];
+      next[tab] = { ...next[tab], isFading: false };
+      return next;
+    });
+  }, [getNormalizationGain, TARGET_LUFS_GAIN]);
+
+  const startFadeOut = useCallback((tabIndex?: number) => {
+    const tab = tabIndex !== undefined ? tabIndex : activeTabRef.current;
+    const audio = audioRefs[tab].current;
+    const mainGain = mainGainsRef.current[tab];
+    const state = statesRef.current[tab];
+    const playlist = playlistsRef.current[tab];
+
+    if (!audio || !mainGain || !audioContextRef.current || state.isFading || !state.isPlaying) return;
+
+    setStates(prev => {
+      const next = [...prev];
+      next[tab] = { ...next[tab], isFading: true };
+      return next;
+    });
+
+    const ctx = audioContextRef.current;
     const now = ctx.currentTime;
     const duration = state.fadeOutDuration;
 
-    gainNode.gain.cancelScheduledValues(now);
-    gainNode.gain.setValueAtTime(gainNode.gain.value, now);
-    // Use setTargetAtTime for a more natural, smoother logarithmic-like decay
-    gainNode.gain.setTargetAtTime(0, now, duration / 4);
+    mainGain.gain.cancelScheduledValues(now);
+    mainGain.gain.setValueAtTime(mainGain.gain.value, now);
+    mainGain.gain.setTargetAtTime(0, now, duration / 4);
 
-    fadeIntervalRef.current = window.setTimeout(() => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        gainNode.gain.setValueAtTime(0, ctx.currentTime);
+    fadeIntervalRefs.current[tab] = window.setTimeout(() => {
+      const currentAudio = audioRefs[tab].current;
+      const currentMainGain = mainGainsRef.current[tab];
+      const currentState = statesRef.current[tab];
+      const currentPlaylist = playlistsRef.current[tab];
+
+      if (currentAudio && currentMainGain) {
+        currentAudio.pause();
+        currentMainGain.gain.setValueAtTime(0, audioContextRef.current?.currentTime || 0);
         
-        const currentTrack = playlist[state.currentTrackIndex];
-        const nextIndex = (state.isShuffle) ? Math.floor(Math.random() * playlist.length) : (state.currentTrackIndex + 1) % playlist.length;
+        const currentTrack = currentPlaylist[currentState.currentTrackIndex];
+        const nextIndex = (currentState.isShuffle) ? Math.floor(Math.random() * currentPlaylist.length) : (currentState.currentTrackIndex + 1) % currentPlaylist.length;
         
         if (currentTrack.playbackMode === PlaybackMode.FOLLOW) {
-          setState(prev => ({ ...prev, isPlaying: true, isFading: false, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, progress: 0 }));
+          setStates(prev => {
+            const next = [...prev];
+            next[tab] = { ...next[tab], isPlaying: true, isFading: false, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, progress: 0 };
+            return next;
+          });
         } else if (currentTrack.playbackMode === PlaybackMode.ADVANCE) {
-          setState(prev => ({ ...prev, isPlaying: false, isFading: false, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, progress: 0 }));
+          setStates(prev => {
+            const next = [...prev];
+            next[tab] = { ...next[tab], isPlaying: false, isFading: false, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, progress: 0 };
+            return next;
+          });
         } else {
-          setState(prev => ({ ...prev, isPlaying: false, isFading: false, currentTime: 0, progress: 0 }));
-          if (audioRef.current) audioRef.current.currentTime = 0;
+          setStates(prev => {
+            const next = [...prev];
+            next[tab] = { ...next[tab], isPlaying: false, isFading: false, currentTime: 0, progress: 0 };
+            return next;
+          });
+          currentAudio.currentTime = 0;
         }
       }
     }, duration * 1000) as unknown as number;
-  }, [state.isPlaying, state.isFading, state.fadeOutDuration, state.isShuffle, state.currentTrackIndex, playlist]);
+  }, []);
 
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Prevent shortcut triggers when typing in input fields (though our controls are mostly ranges)
       if (e.target instanceof HTMLInputElement && e.target.type === 'text') return;
+
+      const tab = activeTabRef.current;
+      const playlist = playlistsRef.current[tab];
+      const state = statesRef.current[tab];
 
       switch (e.code) {
         case 'Space':
@@ -714,7 +1153,11 @@ const App: React.FC = () => {
           break;
         case 'Escape':
           e.preventDefault();
-          startFadeOut();
+          if (state.isFading) {
+            cancelFadeOut();
+          } else {
+            startFadeOut();
+          }
           break;
         case 'KeyD':
           e.preventDefault();
@@ -727,27 +1170,48 @@ const App: React.FC = () => {
         case 'Enter':
           e.preventDefault();
           initAudioEngine();
-          setState(prev => ({ 
-            ...prev, 
-            currentTrackIndex: prev.selectedTrackIndex, 
-            isPlaying: true, 
-            currentTime: 0,
-            progress: 0 
-          }));
+          setStates(prev => {
+            const next = [...prev];
+            next[tab] = { 
+              ...next[tab], 
+              currentTrackIndex: next[tab].selectedTrackIndex, 
+              isPlaying: true, 
+              currentTime: 0,
+              progress: 0 
+            };
+            return next;
+          });
           break;
         case 'ArrowUp':
           e.preventDefault();
-          setState(prev => ({
-            ...prev,
-            selectedTrackIndex: prev.selectedTrackIndex > 0 ? prev.selectedTrackIndex - 1 : playlist.length - 1
-          }));
+          setStates(prev => {
+            const next = [...prev];
+            next[tab] = {
+              ...next[tab],
+              selectedTrackIndex: next[tab].selectedTrackIndex > 0 ? next[tab].selectedTrackIndex - 1 : playlist.length - 1
+            };
+            return next;
+          });
           break;
         case 'ArrowDown':
           e.preventDefault();
-          setState(prev => ({
-            ...prev,
-            selectedTrackIndex: prev.selectedTrackIndex < playlist.length - 1 ? prev.selectedTrackIndex + 1 : 0
-          }));
+          setStates(prev => {
+            const next = [...prev];
+            next[tab] = {
+              ...next[tab],
+              selectedTrackIndex: next[tab].selectedTrackIndex < playlist.length - 1 ? next[tab].selectedTrackIndex + 1 : 0
+            };
+            return next;
+          });
+          break;
+        case 'Digit1':
+          if (e.altKey) { e.preventDefault(); setActiveTab(0); }
+          break;
+        case 'Digit2':
+          if (e.altKey) { e.preventDefault(); setActiveTab(1); }
+          break;
+        case 'Digit3':
+          if (e.altKey) { e.preventDefault(); setActiveTab(2); }
           break;
         default:
           break;
@@ -756,7 +1220,7 @@ const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlayPause, startFadeOut, toggleDucking, toggleShuffle, playlist.length]);
+  }, [handlePlayPause, startFadeOut, toggleDucking, toggleShuffle]);
 
   // Scroll active track into view
   useEffect(() => {
@@ -767,8 +1231,10 @@ const App: React.FC = () => {
   }, [state.selectedTrackIndex]);
 
   const updateTrackRange = useCallback((index: number, start?: number, end?: number) => {
-    setPlaylist(prev => {
-      const newPlaylist = [...prev];
+    const tab = activeTabRef.current;
+    setPlaylists(prev => {
+      const next = [...prev];
+      const newPlaylist = [...next[tab]];
       const track = newPlaylist[index];
       const maxDuration = track.fullDuration || 0;
       
@@ -788,62 +1254,215 @@ const App: React.FC = () => {
         startTime: newStart,
         endTime: newEnd
       };
-      return newPlaylist;
+      next[tab] = newPlaylist;
+      return next;
     });
   }, []);
 
-  const updateTrackVolumeTrim = useCallback((index: number, trim: number) => {
-    setPlaylist(prev => {
-      const newPlaylist = [...prev];
+  const updateTrackVolumeTrim = useCallback((index: number, trim: number, tabIndex?: number) => {
+    const tab = tabIndex !== undefined ? tabIndex : activeTabRef.current;
+    setPlaylists(prev => {
+      const next = [...prev];
+      const newPlaylist = [...next[tab]];
       newPlaylist[index] = { ...newPlaylist[index], volumeTrim: trim };
-      return newPlaylist;
+      next[tab] = newPlaylist;
+      return next;
     });
   }, []);
 
   const updateTrackTitle = useCallback((index: number, title: string) => {
-    setPlaylist(prev => {
-      const newPlaylist = [...prev];
+    const tab = activeTabRef.current;
+    setPlaylists(prev => {
+      const next = [...prev];
+      const newPlaylist = [...next[tab]];
       newPlaylist[index] = { ...newPlaylist[index], title };
-      return newPlaylist;
+      next[tab] = newPlaylist;
+      return next;
     });
   }, []);
 
+  useEffect(() => {
+    isMountedRef.current = true;
+    
+    // WebSocket for OSC
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}`;
+    let socket: WebSocket;
+
+    const connectWS = () => {
+      socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        console.log('OSC WebSocket connected');
+        setOscStatus('connected');
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'OSC_MESSAGE') {
+            const { address, args } = msg.data;
+            // Extract value from OSC argument (handles both metadata and raw values)
+            const value = args[0]?.value !== undefined ? args[0].value : args[0];
+
+            console.log(`OSC: ${address} = ${value}`);
+
+            const catchErr = (err: any) => console.error(`OSC action error (${address}):`, err);
+
+            // Target specific tab if address starts with /1/, /2/, or /3/
+            let targetTab = activeTabRef.current;
+            let finalAddress = address;
+            
+            const tabMatch = address.match(/^\/([1-3])(\/.*)/);
+            if (tabMatch) {
+              targetTab = parseInt(tabMatch[1]) - 1;
+              finalAddress = tabMatch[2];
+            }
+
+            const state = statesRef.current[targetTab];
+            const playlist = playlistsRef.current[targetTab];
+
+            switch (finalAddress) {
+              case '/play':
+                if (value === 1 || value === true || value === '1') {
+                  if (!state.isPlaying) handlePlayPause(targetTab).catch(catchErr);
+                } else if (value === 0 || value === false || value === '0') {
+                  if (state.isPlaying) handlePlayPause(targetTab).catch(catchErr);
+                }
+                break;
+              case '/pause':
+                if (state.isPlaying) handlePlayPause(targetTab).catch(catchErr);
+                break;
+              case '/toggle':
+                handlePlayPause(targetTab).catch(catchErr);
+                break;
+              case '/fade':
+                startFadeOut(targetTab);
+                break;
+              case '/duck':
+                toggleDucking(targetTab);
+                break;
+              case '/volume':
+                if (typeof value === 'number') {
+                  // Map 0-1 to 0-2 (volume trim)
+                  updateTrackVolumeTrim(state.selectedTrackIndex, value * 2, targetTab);
+                }
+                break;
+              case '/track':
+                if (typeof value === 'number') {
+                  const idx = Math.floor(value);
+                  if (idx >= 0 && idx < playlist.length) {
+                    switchTrack(idx, targetTab).catch(catchErr);
+                  }
+                }
+                break;
+              case '/next':
+                if (playlist.length > 0) {
+                  const nextIdx = (state.currentTrackIndex + 1) % playlist.length;
+                  switchTrack(nextIdx, targetTab).catch(catchErr);
+                }
+                break;
+              case '/prev':
+                if (playlist.length > 0) {
+                  const prevIdx = (state.currentTrackIndex - 1 + playlist.length) % playlist.length;
+                  switchTrack(prevIdx, targetTab).catch(catchErr);
+                }
+                break;
+              case '/title':
+                if (typeof value === 'string') {
+                  setPlaylistTitles(prev => {
+                    const next = [...prev];
+                    next[targetTab] = value;
+                    return next;
+                  });
+                }
+                break;
+            }
+          }
+        } catch (err) {
+          console.error('Error handling WebSocket message:', err);
+        }
+      };
+
+      socket.onclose = () => {
+        if (isMountedRef.current) {
+          console.log('OSC WebSocket disconnected, retrying...');
+          setOscStatus('disconnected');
+          setTimeout(connectWS, 3000);
+        }
+      };
+
+      socket.onerror = () => {
+        setOscStatus('error');
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      isMountedRef.current = false;
+      if (socket) {
+        // Only close if it's not already closed or closing
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+      }
+    };
+  }, [handlePlayPause, startFadeOut, toggleDucking, switchTrack, updateTrackVolumeTrim, playlist.length]);
+
   const handleSeek = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (state.isFading || isCrossfadingRef.current) return; 
+    const tab = activeTabRef.current;
+    const state = statesRef.current[tab];
+    const playlist = playlistsRef.current[tab];
+    const audio = audioRefs[tab].current;
+    const currentTrack = playlist[state.currentTrackIndex];
+
+    if (state.isFading || isCrossfadingRefs.current[tab]) return; 
     const time = parseFloat(e.target.value);
     
-    if (audioRef.current && currentTrack) {
+    if (audio && currentTrack) {
       const startTime = currentTrack.startTime || 0;
       const endTime = currentTrack.endTime || state.duration;
       const clampedTime = Math.max(startTime, Math.min(endTime, time));
 
       // Anti-click fade dip
-      if (state.isPlaying && mainGainRef.current && audioContextRef.current) {
+      if (state.isPlaying && mainGainsRef.current[tab] && audioContextRef.current) {
         const ctx = audioContextRef.current;
         const now = ctx.currentTime;
-        mainGainRef.current.gain.cancelScheduledValues(now);
-        mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
-        mainGainRef.current.gain.setTargetAtTime(0, now, 0.01); // 10ms dip
+        mainGainsRef.current[tab]!.gain.cancelScheduledValues(now);
+        mainGainsRef.current[tab]!.gain.setValueAtTime(mainGainsRef.current[tab]!.gain.value, now);
+        mainGainsRef.current[tab]!.gain.setTargetAtTime(0, now, 0.01); // 10ms dip
         
         // Very short wait for the dip
         await new Promise(resolve => setTimeout(resolve, 30));
         
-        audioRef.current.currentTime = clampedTime;
+        audio.currentTime = clampedTime;
         
         const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
         const trim = currentTrack.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
         const finalGain = baseGain * trim;
-        mainGainRef.current.gain.setTargetAtTime(finalGain, ctx.currentTime, 0.015); // 15ms fade back in
+        mainGainsRef.current[tab]!.gain.setTargetAtTime(finalGain, ctx.currentTime, 0.015); // 15ms fade back in
       } else {
-        audioRef.current.currentTime = clampedTime;
+        audio.currentTime = clampedTime;
       }
       
-      setState(prev => ({ ...prev, currentTime: clampedTime, progress: (clampedTime / state.duration) * 100 }));
+      setStates(prev => {
+        const next = [...prev];
+        next[tab] = { ...next[tab], currentTime: clampedTime, progress: (clampedTime / state.duration) * 100 };
+        return next;
+      });
     }
-  }, [state.isPlaying, state.isFading, state.duration, state.isLoudnessNormalized, currentTrack, getNormalizationGain, TARGET_LUFS_GAIN]);
+  }, [getNormalizationGain, TARGET_LUFS_GAIN]);
 
-  const handleDragStart = (index: number) => { if (!state.isFading) setDraggedItemIndex(index); };
+  const handleDragStart = (index: number) => { 
+    const tab = activeTabRef.current;
+    if (!statesRef.current[tab].isFading) setDraggedItemIndex(index); 
+  };
   const handleDrop = (dropIndex: number) => {
+    const tab = activeTabRef.current;
+    const playlist = playlistsRef.current[tab];
+    const state = statesRef.current[tab];
+
     if (draggedItemIndex === null || draggedItemIndex === dropIndex) { setDraggedItemIndex(null); return; }
     const newPlaylist = [...playlist];
     const [movedItem] = newPlaylist.splice(draggedItemIndex, 1);
@@ -852,151 +1471,282 @@ const App: React.FC = () => {
     if (draggedItemIndex === state.currentTrackIndex) newCurrentIndex = dropIndex;
     else if (draggedItemIndex < state.currentTrackIndex && dropIndex >= state.currentTrackIndex) newCurrentIndex--;
     else if (draggedItemIndex > state.currentTrackIndex && dropIndex <= state.currentTrackIndex) newCurrentIndex++;
-    setPlaylist(newPlaylist);
-    setState(prev => ({ ...prev, currentTrackIndex: newCurrentIndex }));
+    
+    setPlaylists(prev => {
+      const next = [...prev];
+      next[tab] = newPlaylist;
+      return next;
+    });
+    setStates(prev => {
+      const next = [...prev];
+      next[tab] = { ...next[tab], currentTrackIndex: newCurrentIndex };
+      return next;
+    });
     setDraggedItemIndex(null);
   };
 
+  // Explicit useEffect calls for each playlist's audio playback (Rules of Hooks)
   useEffect(() => {
     let isStale = false;
-    const audio = audioRef.current;
+    const i = 0;
+    const audio = audioRefs[i].current;
+    const playlist = playlists[i];
+    const state = states[i];
+    const currentTrack = playlist[state.currentTrackIndex];
+
     if (!audio || !currentTrack || !currentTrack.url) return;
     
     const loadAndPlay = async () => {
       if (!currentTrack.url) {
         console.warn(`Cannot play track "${currentTrack.title}": No URL provided.`);
-        setLoadError(`Missing audio file for: ${currentTrack.title}`);
+        if (i === activeTab) setLoadError(`Missing audio file for: ${currentTrack.title}`);
         return;
       }
 
-      // 1. Handle Source Change
-      if (lastLoadedUrlRef.current !== currentTrack.url) {
-        console.log(`Loading new track URL: ${currentTrack.title}`);
-        lastLoadedUrlRef.current = currentTrack.url;
-        setLoadError(null);
-        
-        // Wait for any pending play to finish before changing src
-        if (playPromiseRef.current) {
-          try { await playPromiseRef.current; } catch (e) {}
+      if (lastLoadedUrlRefs.current[i] !== currentTrack.url) {
+        lastLoadedUrlRefs.current[i] = currentTrack.url;
+        if (i === activeTab) setLoadError(null);
+        if (playPromiseRefs.current[i]) {
+          try { await playPromiseRefs.current[i]; } catch (e) {}
         }
-        
         if (isStale) return;
-
-        // Anti-click fade out before changing source
-        if (mainGainRef.current && audioContextRef.current) {
+        if (mainGainsRef.current[i] && audioContextRef.current) {
           const now = audioContextRef.current.currentTime;
-          mainGainRef.current.gain.cancelScheduledValues(now);
-          mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
-          mainGainRef.current.gain.setTargetAtTime(0, now, 0.015); // 15ms fade
+          mainGainsRef.current[i]!.gain.cancelScheduledValues(now);
+          mainGainsRef.current[i]!.gain.setValueAtTime(mainGainsRef.current[i]!.gain.value, now);
+          mainGainsRef.current[i]!.gain.setTargetAtTime(0, now, 0.015);
           await new Promise(resolve => setTimeout(resolve, 50));
         }
-
         if (isStale) return;
         audio.pause();
-        
-        // Reset audio element
         audio.src = currentTrack.url;
-        audio.load(); // Explicitly call load after setting src
-        
-        // Reset currentTime for new track
+        audio.load();
         audio.currentTime = currentTrack.startTime || 0;
       } else if (state.isPlaying && audio.currentTime < (currentTrack.startTime || 0)) {
-        // Ensure we start from the marker if we are behind it
         audio.currentTime = currentTrack.startTime || 0;
       }
 
-      // 2. Handle Playback State
       if (state.isPlaying) {
-        if (currentTrack.isAnalyzing) {
-          console.log("Waiting for analysis to complete before playing...");
-          return;
-        }
-
+        if (currentTrack.isAnalyzing) return;
         try {
-          if (audioContextRef.current?.state === 'suspended') {
-            await audioContextRef.current.resume();
-          }
-          
-          if (mainGainRef.current && audioContextRef.current) {
+          if (audioContextRef.current?.state === 'suspended') await audioContextRef.current.resume();
+          if (mainGainsRef.current[i] && audioContextRef.current) {
             const now = audioContextRef.current.currentTime;
             const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
             const trim = currentTrack.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
             const finalGain = baseGain * trim;
-            
-            mainGainRef.current.gain.cancelScheduledValues(now);
-            // If we are just starting, ensure we start from 0 for a smooth fade-in
+            mainGainsRef.current[i]!.gain.cancelScheduledValues(now);
             if (audio.currentTime <= (currentTrack.startTime || 0) + 0.1) {
-              mainGainRef.current.gain.setValueAtTime(0, now);
+              mainGainsRef.current[i]!.gain.setValueAtTime(0, now);
             } else {
-              mainGainRef.current.gain.setValueAtTime(mainGainRef.current.gain.value, now);
+              mainGainsRef.current[i]!.gain.setValueAtTime(mainGainsRef.current[i]!.gain.value, now);
             }
-            mainGainRef.current.gain.setTargetAtTime(finalGain, now, 0.02); // 20ms fade in
+            mainGainsRef.current[i]!.gain.setTargetAtTime(finalGain, now, 0.02);
           }
-          
           if (isStale) return;
-
-          // Ensure audio is ready to play
-          if (audio.readyState < 2) { // HAVE_CURRENT_DATA
-            console.log(`Audio not ready for ${currentTrack.title}, waiting for canplay... (readyState: ${audio.readyState})`);
+          if (audio.readyState < 2) {
             await new Promise((resolve) => {
-              const onCanPlay = () => {
-                console.log(`canplay event fired for ${currentTrack.title}`);
-                audio.removeEventListener('canplay', onCanPlay);
-                resolve(null);
-              };
-              const onError = () => {
-                console.error(`error event fired for ${currentTrack.title}:`, audio.error?.message);
-                audio.removeEventListener('error', onError);
-                resolve(null); // Resolve anyway to let play() handle the error
-              };
+              const onCanPlay = () => { audio.removeEventListener('canplay', onCanPlay); resolve(null); };
+              const onError = () => { audio.removeEventListener('error', onError); resolve(null); };
               audio.addEventListener('canplay', onCanPlay);
               audio.addEventListener('error', onError);
-              // Timeout as fallback
-              setTimeout(() => {
-                audio.removeEventListener('canplay', onCanPlay);
-                audio.removeEventListener('error', onError);
-                resolve(null);
-              }, 2000);
+              setTimeout(() => { audio.removeEventListener('canplay', onCanPlay); audio.removeEventListener('error', onError); resolve(null); }, 2000);
             });
           }
-
           if (isStale) return;
-
-          console.log(`Playing track: ${currentTrack.title} (currentTime: ${audio.currentTime}s, readyState: ${audio.readyState})`);
-          playPromiseRef.current = audio.play();
-          await playPromiseRef.current;
-          playPromiseRef.current = null;
-          console.log(`Playback started successfully for ${currentTrack.title}`);
+          playPromiseRefs.current[i] = audio.play();
+          await playPromiseRefs.current[i];
+          playPromiseRefs.current[i] = null;
         } catch (e: any) {
           if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
-            console.warn("Playback failed", e);
-            if (audio.error) setLoadError("Could not load audio file.");
+            if (audio.error && i === activeTab) setLoadError("Could not load audio file.");
           }
-          playPromiseRef.current = null;
+          playPromiseRefs.current[i] = null;
         }
       } else {
-        // If we want to pause, wait for any pending play to resolve first
-        if (playPromiseRef.current) {
-          try { await playPromiseRef.current; } catch (e) {}
-        }
-        
-        // Small delay for smooth pause if gain node exists
-        if (mainGainRef.current && audioContextRef.current) {
-          await new Promise(resolve => setTimeout(resolve, 80));
-        }
-        
+        if (playPromiseRefs.current[i]) { try { await playPromiseRefs.current[i]; } catch (e) {} }
+        if (mainGainsRef.current[i] && audioContextRef.current) await new Promise(resolve => setTimeout(resolve, 80));
         if (isStale) return;
         audio.pause();
       }
     };
-    
     loadAndPlay();
     return () => { isStale = true; };
-  }, [currentTrack?.id, currentTrack?.isAnalyzing, state.isPlaying, state.isLoudnessNormalized, getNormalizationGain]);
+  }, [playlists[0][states[0].currentTrackIndex]?.id, playlists[0][states[0].currentTrackIndex]?.isAnalyzing, states[0].isPlaying, states[0].isLoudnessNormalized, getNormalizationGain]);
+
+  useEffect(() => {
+    let isStale = false;
+    const i = 1;
+    const audio = audioRefs[i].current;
+    const playlist = playlists[i];
+    const state = states[i];
+    const currentTrack = playlist[state.currentTrackIndex];
+
+    if (!audio || !currentTrack || !currentTrack.url) return;
+    
+    const loadAndPlay = async () => {
+      if (!currentTrack.url) {
+        if (i === activeTab) setLoadError(`Missing audio file for: ${currentTrack.title}`);
+        return;
+      }
+
+      if (lastLoadedUrlRefs.current[i] !== currentTrack.url) {
+        lastLoadedUrlRefs.current[i] = currentTrack.url;
+        if (i === activeTab) setLoadError(null);
+        if (playPromiseRefs.current[i]) { try { await playPromiseRefs.current[i]; } catch (e) {} }
+        if (isStale) return;
+        if (mainGainsRef.current[i] && audioContextRef.current) {
+          const now = audioContextRef.current.currentTime;
+          mainGainsRef.current[i]!.gain.cancelScheduledValues(now);
+          mainGainsRef.current[i]!.gain.setValueAtTime(mainGainsRef.current[i]!.gain.value, now);
+          mainGainsRef.current[i]!.gain.setTargetAtTime(0, now, 0.015);
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (isStale) return;
+        audio.pause();
+        audio.src = currentTrack.url;
+        audio.load();
+        audio.currentTime = currentTrack.startTime || 0;
+      } else if (state.isPlaying && audio.currentTime < (currentTrack.startTime || 0)) {
+        audio.currentTime = currentTrack.startTime || 0;
+      }
+
+      if (state.isPlaying) {
+        if (currentTrack.isAnalyzing) return;
+        try {
+          if (audioContextRef.current?.state === 'suspended') await audioContextRef.current.resume();
+          if (mainGainsRef.current[i] && audioContextRef.current) {
+            const now = audioContextRef.current.currentTime;
+            const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
+            const trim = currentTrack.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
+            const finalGain = baseGain * trim;
+            mainGainsRef.current[i]!.gain.cancelScheduledValues(now);
+            if (audio.currentTime <= (currentTrack.startTime || 0) + 0.1) {
+              mainGainsRef.current[i]!.gain.setValueAtTime(0, now);
+            } else {
+              mainGainsRef.current[i]!.gain.setValueAtTime(mainGainsRef.current[i]!.gain.value, now);
+            }
+            mainGainsRef.current[i]!.gain.setTargetAtTime(finalGain, now, 0.02);
+          }
+          if (isStale) return;
+          if (audio.readyState < 2) {
+            await new Promise((resolve) => {
+              const onCanPlay = () => { audio.removeEventListener('canplay', onCanPlay); resolve(null); };
+              const onError = () => { audio.removeEventListener('error', onError); resolve(null); };
+              audio.addEventListener('canplay', onCanPlay);
+              audio.addEventListener('error', onError);
+              setTimeout(() => { audio.removeEventListener('canplay', onCanPlay); audio.removeEventListener('error', onError); resolve(null); }, 2000);
+            });
+          }
+          if (isStale) return;
+          playPromiseRefs.current[i] = audio.play();
+          await playPromiseRefs.current[i];
+          playPromiseRefs.current[i] = null;
+        } catch (e: any) {
+          if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+            if (audio.error && i === activeTab) setLoadError("Could not load audio file.");
+          }
+          playPromiseRefs.current[i] = null;
+        }
+      } else {
+        if (playPromiseRefs.current[i]) { try { await playPromiseRefs.current[i]; } catch (e) {} }
+        if (mainGainsRef.current[i] && audioContextRef.current) await new Promise(resolve => setTimeout(resolve, 80));
+        if (isStale) return;
+        audio.pause();
+      }
+    };
+    loadAndPlay();
+    return () => { isStale = true; };
+  }, [playlists[1][states[1].currentTrackIndex]?.id, playlists[1][states[1].currentTrackIndex]?.isAnalyzing, states[1].isPlaying, states[1].isLoudnessNormalized, getNormalizationGain]);
+
+  useEffect(() => {
+    let isStale = false;
+    const i = 2;
+    const audio = audioRefs[i].current;
+    const playlist = playlists[i];
+    const state = states[i];
+    const currentTrack = playlist[state.currentTrackIndex];
+
+    if (!audio || !currentTrack || !currentTrack.url) return;
+    
+    const loadAndPlay = async () => {
+      if (!currentTrack.url) {
+        if (i === activeTab) setLoadError(`Missing audio file for: ${currentTrack.title}`);
+        return;
+      }
+
+      if (lastLoadedUrlRefs.current[i] !== currentTrack.url) {
+        lastLoadedUrlRefs.current[i] = currentTrack.url;
+        if (i === activeTab) setLoadError(null);
+        if (playPromiseRefs.current[i]) { try { await playPromiseRefs.current[i]; } catch (e) {} }
+        if (isStale) return;
+        if (mainGainsRef.current[i] && audioContextRef.current) {
+          const now = audioContextRef.current.currentTime;
+          mainGainsRef.current[i]!.gain.cancelScheduledValues(now);
+          mainGainsRef.current[i]!.gain.setValueAtTime(mainGainsRef.current[i]!.gain.value, now);
+          mainGainsRef.current[i]!.gain.setTargetAtTime(0, now, 0.015);
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (isStale) return;
+        audio.pause();
+        audio.src = currentTrack.url;
+        audio.load();
+        audio.currentTime = currentTrack.startTime || 0;
+      } else if (state.isPlaying && audio.currentTime < (currentTrack.startTime || 0)) {
+        audio.currentTime = currentTrack.startTime || 0;
+      }
+
+      if (state.isPlaying) {
+        if (currentTrack.isAnalyzing) return;
+        try {
+          if (audioContextRef.current?.state === 'suspended') await audioContextRef.current.resume();
+          if (mainGainsRef.current[i] && audioContextRef.current) {
+            const now = audioContextRef.current.currentTime;
+            const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
+            const trim = currentTrack.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
+            const finalGain = baseGain * trim;
+            mainGainsRef.current[i]!.gain.cancelScheduledValues(now);
+            if (audio.currentTime <= (currentTrack.startTime || 0) + 0.1) {
+              mainGainsRef.current[i]!.gain.setValueAtTime(0, now);
+            } else {
+              mainGainsRef.current[i]!.gain.setValueAtTime(mainGainsRef.current[i]!.gain.value, now);
+            }
+            mainGainsRef.current[i]!.gain.setTargetAtTime(finalGain, now, 0.02);
+          }
+          if (isStale) return;
+          if (audio.readyState < 2) {
+            await new Promise((resolve) => {
+              const onCanPlay = () => { audio.removeEventListener('canplay', onCanPlay); resolve(null); };
+              const onError = () => { audio.removeEventListener('error', onError); resolve(null); };
+              audio.addEventListener('canplay', onCanPlay);
+              audio.addEventListener('error', onError);
+              setTimeout(() => { audio.removeEventListener('canplay', onCanPlay); audio.removeEventListener('error', onError); resolve(null); }, 2000);
+            });
+          }
+          if (isStale) return;
+          playPromiseRefs.current[i] = audio.play();
+          await playPromiseRefs.current[i];
+          playPromiseRefs.current[i] = null;
+        } catch (e: any) {
+          if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+            if (audio.error && i === activeTab) setLoadError("Could not load audio file.");
+          }
+          playPromiseRefs.current[i] = null;
+        }
+      } else {
+        if (playPromiseRefs.current[i]) { try { await playPromiseRefs.current[i]; } catch (e) {} }
+        if (mainGainsRef.current[i] && audioContextRef.current) await new Promise(resolve => setTimeout(resolve, 80));
+        if (isStale) return;
+        audio.pause();
+      }
+    };
+    loadAndPlay();
+    return () => { isStale = true; };
+  }, [playlists[2][states[2].currentTrackIndex]?.id, playlists[2][states[2].currentTrackIndex]?.isAnalyzing, states[2].isPlaying, states[2].isLoudnessNormalized, getNormalizationGain]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
-      <main className="w-full max-w-xl flex flex-col gap-8 p-8 rounded-[2.5rem] border border-white/5 bg-zinc-900/50 backdrop-blur-xl shadow-2xl">
+      <main className="w-full max-w-xl h-[850px] flex flex-col gap-8 p-8 rounded-[2.5rem] border border-white/5 bg-zinc-900/50 backdrop-blur-xl shadow-2xl overflow-hidden">
         
         <div className="flex flex-col gap-1">
           {loadError && (
@@ -1010,11 +1760,79 @@ const App: React.FC = () => {
               </button>
             </div>
           )}
+
+          {/* Playlist Tabs */}
+          <div className="flex items-center gap-1 mb-4 p-1 rounded-2xl bg-black/20 border border-white/5">
+            {[0, 1, 2].map((tabIndex) => (
+              <div
+                key={tabIndex}
+                className={`flex-1 relative group rounded-xl transition-all duration-300 ${
+                  activeTab === tabIndex 
+                    ? 'bg-white/10 text-white shadow-lg' 
+                    : 'text-white/40 hover:text-white/60 hover:bg-white/5'
+                }`}
+              >
+                {editingTabIndex === tabIndex ? (
+                  <input
+                    autoFocus
+                    className="w-full bg-transparent border-none outline-none py-2 px-4 text-[10px] font-bold tracking-wider uppercase text-center"
+                    value={playlistTitles[tabIndex]}
+                    onChange={(e) => {
+                      const next = [...playlistTitles];
+                      next[tabIndex] = e.target.value;
+                      setPlaylistTitles(next);
+                    }}
+                    onBlur={() => setEditingTabIndex(null)}
+                    onKeyDown={(e) => e.key === 'Enter' && setEditingTabIndex(null)}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setActiveTab(tabIndex)}
+                    onDoubleClick={() => setEditingTabIndex(tabIndex)}
+                    className="w-full py-2 px-4 text-[10px] font-bold tracking-wider uppercase text-center flex items-center justify-center gap-2"
+                  >
+                    {playlistTitles[tabIndex]}
+                    {playlists[tabIndex].length > 0 && (
+                      <span className="ml-2 opacity-50">({playlists[tabIndex].length})</span>
+                    )}
+                    {states[tabIndex].isPlaying && (
+                      <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    )}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
           <div className="flex items-center justify-between">
             <div className="flex flex-col gap-1">
               <h1 className="text-xl font-bold tracking-tight text-white">Sound File Player</h1>
             </div>
-            <div className="flex items-center gap-3">
+            <div className={`flex items-center gap-3 transition-all duration-500 ${states[activeTab].isPlaying ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+              {analysisQueue.length > 0 && (
+                <div 
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[9px] font-bold uppercase tracking-widest animate-in fade-in slide-in-from-right-4"
+                  title={`${analysisQueue.length} tracks remaining in analysis queue`}
+                >
+                  <i className="fa-solid fa-microchip animate-pulse"></i>
+                  <span>Analyzing {analysisQueue.length} {analysisQueue.length === 1 ? 'track' : 'tracks'}</span>
+                </div>
+              )}
+              <div 
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-full border text-[8px] font-bold uppercase tracking-widest transition-all ${
+                  oscStatus === 'connected' 
+                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+                    : oscStatus === 'error'
+                    ? 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                    : 'bg-white/5 border-white/5 text-white/20'
+                }`}
+                title={`OSC: ${oscStatus}`}
+              >
+                <div className={`w-1 h-1 rounded-full ${
+                  oscStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-current'
+                }`}></div>
+                OSC
+              </div>
               <button 
                 onClick={saveSession}
                 className="text-[10px] p-2 rounded-full border bg-white/5 border-white/5 text-white/30 hover:text-emerald-400 hover:bg-white/10 transition-all"
@@ -1047,7 +1865,7 @@ const App: React.FC = () => {
           {playlist.length > 0 && selectedTrack ? (
             <div className="w-full bg-[#1a1a1a] rounded-3xl border border-white/10 shadow-xl overflow-hidden">
               {/* Combined Block: Now Playing + Controls + Next Up */}
-              <div className="p-6 border-b border-white/5">
+              <div className="p-6 border-b border-white/5 h-[110px] flex flex-col justify-center">
                 {state.isPlaying && currentTrack ? (
                   <div className="flex flex-col gap-3 animate-in fade-in slide-in-from-top-4 duration-500">
                     <div className="flex justify-between items-center">
@@ -1069,7 +1887,10 @@ const App: React.FC = () => {
                         <div 
                           className="absolute h-full bg-emerald-500 transition-all duration-300" 
                           style={{ width: `${state.progress}%` }}
-                        ></div>
+                        >
+                          {/* White Playhead Highlight */}
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full translate-x-1/2"></div>
+                        </div>
                         <input 
                           type="range" 
                           min="0" 
@@ -1100,14 +1921,15 @@ const App: React.FC = () => {
 
               <div className="p-6 bg-white/[0.02] border-b border-white/5 flex justify-center">
                 <LargeControls 
-                  isPlaying={state.isPlaying} 
-                  isSelectionDifferent={state.selectedTrackIndex !== state.currentTrackIndex}
+                  isPlaying={states[activeTab].isPlaying} 
+                  isSelectionDifferent={states[activeTab].selectedTrackIndex !== states[activeTab].currentTrackIndex}
                   onPlayPause={handlePlayPause} 
                   onFadeOut={startFadeOut} 
+                  onCancelFade={cancelFadeOut}
                   onToggleDuck={toggleDucking} 
-                  isFading={state.isFading} 
-                  isDucked={state.isDucked} 
-                  isEnding={state.duration - state.currentTime <= 10}
+                  isFading={states[activeTab].isFading} 
+                  isDucked={states[activeTab].isDucked} 
+                  isEnding={states[activeTab].duration - states[activeTab].currentTime <= 10}
                 />
               </div>
 
@@ -1124,12 +1946,6 @@ const App: React.FC = () => {
                         placeholder="Track Title"
                       />
                     </div>
-                    <button 
-                      onClick={() => setIsEditing(false)}
-                      className="text-[10px] px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white transition-all ml-4 border border-white/5"
-                    >
-                      Close Edit
-                    </button>
                   </div>
 
                   <div className="w-full mb-6 group/seek relative h-16 flex items-center">
@@ -1156,7 +1972,7 @@ const App: React.FC = () => {
 
                       {/* Progress Bar (Only visible if viewing current track) */}
                       <div className={`h-full bg-white ${state.isPlaying && isViewingCurrent ? 'opacity-100' : 'opacity-20'} transition-all relative`} style={{ width: `${isViewingCurrent ? state.progress : 0}%` }}>
-                        <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg scale-0 group-hover/seek:scale-100 transition-transform"></div>
+                        <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full transition-transform"></div>
                       </div>
 
                       {/* Start Handle */}
@@ -1231,7 +2047,7 @@ const App: React.FC = () => {
                     )}
                   </div>
                   
-                  <div className="w-full flex justify-between items-center text-[10px] font-mono opacity-40 mb-4">
+                  <div className="w-full flex justify-between items-center text-[10px] font-mono opacity-40 mb-6">
                     <span>
                       {isViewingCurrent 
                         ? `${Math.floor(state.currentTime / 60)}:${(Math.floor(state.currentTime % 60)).toString().padStart(2,'0')}`
@@ -1245,39 +2061,103 @@ const App: React.FC = () => {
                       }
                     </span>
                   </div>
+
+                  {/* Volume Trim Slider moved from playlist to edit window */}
+                  <div className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">VOLUME</span>
+                    </div>
+                    
+                    <div className="flex-1 flex items-center gap-3">
+                      <button 
+                        onClick={() => {
+                          const currentTrim = selectedTrack.volumeTrim !== undefined ? selectedTrack.volumeTrim : 1.0;
+                          updateTrackVolumeTrim(state.selectedTrackIndex, Math.max(0, currentTrim * Math.pow(10, -1/20)));
+                        }}
+                        className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-xs text-white/40 hover:text-white transition-colors"
+                        title="-1dB"
+                      >
+                        -
+                      </button>
+
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="2" 
+                        step="0.01" 
+                        value={selectedTrack.volumeTrim !== undefined ? selectedTrack.volumeTrim : 1.0} 
+                        onChange={(e) => updateTrackVolumeTrim(state.selectedTrackIndex, parseFloat(e.target.value))}
+                        className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-white hover:bg-white/20 transition-colors"
+                      />
+
+                      <button 
+                        onClick={() => {
+                          const currentTrim = selectedTrack.volumeTrim !== undefined ? selectedTrack.volumeTrim : 1.0;
+                          updateTrackVolumeTrim(state.selectedTrackIndex, Math.min(2, currentTrim * Math.pow(10, 1/20)));
+                        }}
+                        className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-xs text-white/40 hover:text-white transition-colors"
+                        title="+1dB"
+                      >
+                        +
+                      </button>
+                    </div>
+
+                    <div className="min-w-[45px] text-right">
+                      <span className="text-xs font-mono text-white/60">
+                        {Math.round((selectedTrack.volumeTrim !== undefined ? selectedTrack.volumeTrim : 1.0) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-end mt-6">
+                    <button 
+                      onClick={() => setIsEditing(false)}
+                      className="text-[9px] font-bold tracking-[0.1em] uppercase text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-2 bg-indigo-500/10 px-3 py-1.5 rounded-full border border-indigo-500/20"
+                      title="Close editor"
+                    >
+                      <i className="fa-solid fa-xmark"></i> Close Edit
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
           ) : (
             <div className="w-full p-12 bg-[#1a1a1a] rounded-3xl border border-white/10 shadow-xl flex items-center justify-center">
-              <button onClick={() => folderInputRef.current?.click()} className="btn-primary px-10 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em]">Load Folder</button>
+              <button onClick={() => folderInputRef.current?.click()} className="btn-primary px-12 py-5 rounded-2xl text-[11px] font-bold uppercase tracking-[0.2em]">Load Folder</button>
             </div>
           )}
         </div>
 
-        {playlist.length > 0 && (
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between px-2">
+        {playlist.length > 0 && !isEditing && (
+          <div className="flex-1 flex flex-col gap-4 min-h-0">
+            <div className="flex items-center justify-between px-2 shrink-0">
               <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] opacity-30">Playlist</h3>
-              <div className="flex items-center gap-2">
+              <div className={`flex items-center gap-2 transition-all duration-500 ${state.isPlaying ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
                 <button onClick={toggleShuffle} className={`text-[10px] p-2 rounded-full border transition-all ${state.isShuffle ? 'bg-amber-500/20 border-amber-500/50 text-amber-400' : 'bg-white/5 border-white/5 text-white/30 hover:text-white/60'}`} title="Shuffle (S)"><i className="fa-solid fa-shuffle"></i></button>
                 <button onClick={clearPlaylist} className="text-[10px] p-2 rounded-full border bg-white/5 border-white/5 text-white/30 hover:text-rose-400 hover:bg-white/10 transition-all" title="Clear Playlist"><i className="fa-solid fa-trash-can"></i></button>
-                <button onClick={() => fileInputRef.current?.click()} className="text-[9px] font-bold tracking-[0.1em] uppercase text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-2 bg-indigo-500/10 px-3 py-1.5 rounded-full border border-indigo-500/20" title="Load more tracks"><i className="fa-solid fa-folder-open"></i> Load Tracks</button>
+                <button 
+                  onClick={() => fileInputRef.current?.click()} 
+                  className="text-[10px] font-bold tracking-[0.1em] uppercase text-indigo-400 hover:text-indigo-300 transition-all flex items-center gap-3 bg-indigo-500/10 px-5 py-2.5 rounded-full border border-indigo-500/20 hover:shadow-[0_0_20px_rgba(129,140,248,0.3)] hover:-translate-y-0.5" 
+                  title="Load more tracks"
+                >
+                  <i className="fa-solid fa-folder-open"></i> Load Tracks
+                </button>
               </div>
             </div>
-            <div className="flex flex-col gap-2 max-h-[250px] overflow-y-auto custom-scrollbar pr-2 pb-8">
-            {playlist.map((track, index) => (
+            <div className="flex-1 flex flex-col gap-2 overflow-y-auto custom-scrollbar pr-2 pb-8">
+            {playlists[activeTab].map((track, index) => (
               <TrackItem 
                 key={track.id} 
                 track={track} 
                 index={index} 
-                isActive={state.currentTrackIndex === index} 
-                isSelected={state.selectedTrackIndex === index}
+                isActive={states[activeTab].currentTrackIndex === index} 
+                isSelected={states[activeTab].selectedTrackIndex === index}
                 onClick={() => {
-                  setState(p => ({ 
-                    ...p, 
-                    selectedTrackIndex: index, 
-                  }));
+                  if (states[activeTab].currentTrackIndex === index) {
+                    handlePlayPause();
+                  } else {
+                    switchTrack(index);
+                  }
                 }} 
                 onDragStart={handleDragStart} 
                 onDragOver={() => {}} 
@@ -1286,7 +2166,11 @@ const App: React.FC = () => {
                 onToggleLoop={() => toggleTrackLoop(index)}
                 onRemove={() => removeTrack(index)}
                 onEdit={() => {
-                  setState(p => ({ ...p, selectedTrackIndex: index }));
+                  setStates(prev => {
+                    const next = [...prev];
+                    next[activeTab] = { ...next[activeTab], selectedTrackIndex: index };
+                    return next;
+                  });
                   setIsEditing(true);
                 }}
                 onVolumeTrimChange={(trim) => updateTrackVolumeTrim(index, trim)}
@@ -1296,112 +2180,177 @@ const App: React.FC = () => {
         </div>
       )}
 
-        <audio 
-          ref={audioRef} 
-          onTimeUpdate={() => { 
-            if (!isDraggingProgress && audioRef.current && currentTrack) {
-              const time = audioRef.current.currentTime;
-              const duration = audioRef.current.duration;
-              const endTime = currentTrack.endTime || duration;
-              
-              setState(p => ({ ...p, currentTime: time, progress: (time / duration) * 100 }));
-              
-              // Handle End Time - only if duration is valid and we've actually played a bit
-              if (duration > 0 && endTime > 0 && time >= endTime && time > 0.5 && state.isPlaying && !isCrossfadingRef.current) {
-                console.log(`Track end reached: ${time} >= ${endTime}`);
+        {[0, 1, 2].map(i => (
+          <React.Fragment key={i}>
+            <audio 
+              ref={audioRefs[i]} 
+              onTimeUpdate={() => { 
+                if (!isDraggingProgress && audioRefs[i].current && playlists[i][states[i].currentTrackIndex]) {
+                  const audio = audioRefs[i].current;
+                  const state = states[i];
+                  const currentTrack = playlists[i][state.currentTrackIndex];
+                  const time = audio.currentTime;
+                  const duration = audio.duration;
+                  const endTime = currentTrack.endTime || duration;
+                  
+                  setStates(prev => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], currentTime: time, progress: (time / duration) * 100 };
+                    return next;
+                  });
+                  
+                  // Handle End Time
+                  if (duration > 0 && endTime > 0 && time >= endTime && time > 0.5 && state.isPlaying && !isCrossfadingRefs.current[i]) {
+                    if (mainGainsRef.current[i] && audioContextRef.current) {
+                      const now = audioContextRef.current.currentTime;
+                      mainGainsRef.current[i]!.gain.setTargetAtTime(0, now, 0.015);
+                    }
+
+                    setTimeout(() => {
+                      if (audioRefs[i].current) {
+                        const event = new Event('ended');
+                        audioRefs[i].current.dispatchEvent(event);
+                      }
+                    }, 40);
+                  }
+
+                  // Trigger crossfade
+                  const startTime = currentTrack.startTime || 0;
+                  const isNearEnd = endTime > 0 && time > endTime - CROSSFADE_DURATION && time > startTime + 1;
+                  if ((state.isShuffle || currentTrack.isLooping) && isNearEnd && !isCrossfadingRefs.current[i]) {
+                    // We need a way to call startCrossfade for a specific tab
+                    // I'll update startCrossfade to take an optional tab index
+                    startCrossfade(i);
+                  }
+                }
+              }}
+              onLoadedMetadata={() => {
+                if (audioRefs[i].current) {
+                  setStates(prev => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], duration: audioRefs[i].current!.duration };
+                    return next;
+                  });
+                }
+              }}
+              onError={(e) => {
+                const audio = audioRefs[i].current;
+                if (audio && audio.error) {
+                  console.error(`Audio error (Tab ${i+1}):`, audio.error.message);
+                  if (i === activeTab) setLoadError(`Playback failed: ${audio.error.message}`);
+                }
+              }}
+              onEnded={() => { 
+                const playlist = playlists[i];
+                const state = states[i];
+                if (playlist.length === 0 || isCrossfadingRefs.current[i]) return;
+                const currentTrack = playlist[state.currentTrackIndex];
                 
-                // Anti-click fade out before ending
-                if (mainGainRef.current && audioContextRef.current) {
-                  const now = audioContextRef.current.currentTime;
-                  mainGainRef.current.gain.setTargetAtTime(0, now, 0.015);
+                if (currentTrack.isLooping) {
+                  if (mainGainsRef.current[i] && audioContextRef.current) {
+                    const now = audioContextRef.current.currentTime;
+                    mainGainsRef.current[i]!.gain.cancelScheduledValues(now);
+                    mainGainsRef.current[i]!.gain.setValueAtTime(0, now);
+                    const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
+                    const trim = currentTrack.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
+                    const finalGain = baseGain * trim;
+                    mainGainsRef.current[i]!.gain.setTargetAtTime(finalGain, now, 0.015);
+                  }
+                  setStates(prev => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], currentTime: 0, isPlaying: true };
+                    return next;
+                  });
+                  if (audioRefs[i].current) audioRefs[i].current.currentTime = currentTrack.startTime || 0;
+                  return;
                 }
 
-                // Trigger end logic manually after a tiny fade
-                setTimeout(() => {
-                  if (audioRef.current) {
-                    const event = new Event('ended');
-                    audioRef.current.dispatchEvent(event);
+                const nextIndex = (state.isShuffle) ? Math.floor(Math.random() * playlist.length) : (state.currentTrackIndex + 1) % playlist.length;
+                
+                if (currentTrack.playbackMode === PlaybackMode.FOLLOW) {
+                  if (nextIndex === state.currentTrackIndex && audioRefs[i].current) {
+                    audioRefs[i].current.currentTime = playlist[nextIndex].startTime || 0;
+                    audioRefs[i].current.play().catch(() => {});
                   }
-                }, 40);
-              }
-
-              // Trigger crossfade if shuffle is on OR looping is on and we're 5s from end
-              const startTime = currentTrack.startTime || 0;
-              const isNearEnd = endTime > 0 && time > endTime - CROSSFADE_DURATION && time > startTime + 1;
-              if ((state.isShuffle || currentTrack.isLooping) && isNearEnd && !isCrossfadingRef.current) {
-                startCrossfade();
-              }
-            }
-          }}
-          onLoadedMetadata={() => audioRef.current && setState(p => ({ ...p, duration: audioRef.current!.duration }))}
-          onError={(e) => {
-            const audio = audioRef.current;
-            if (audio && audio.error) {
-              console.error("Audio error:", audio.error.message, "Code:", audio.error.code);
-              setLoadError(`Playback failed: ${audio.error.message || 'The element has no supported sources.'}`);
-            }
-          }}
-          onEnded={() => { 
-            if (playlist.length === 0 || isCrossfadingRef.current) return;
-            const currentTrack = playlist[state.currentTrackIndex];
-            
-            if (currentTrack.isLooping) {
-              if (mainGainRef.current && audioContextRef.current) {
-                const now = audioContextRef.current.currentTime;
-                mainGainRef.current.gain.cancelScheduledValues(now);
-                mainGainRef.current.gain.setValueAtTime(0, now);
-                const baseGain = state.isLoudnessNormalized ? getNormalizationGain(currentTrack) : TARGET_LUFS_GAIN;
-                const trim = currentTrack.volumeTrim !== undefined ? currentTrack.volumeTrim : 1.0;
-                const finalGain = baseGain * trim;
-                mainGainRef.current.gain.setTargetAtTime(finalGain, now, 0.015);
-              }
-              setState(p => ({ ...p, currentTime: 0, isPlaying: true }));
-              if (audioRef.current) audioRef.current.currentTime = currentTrack.startTime || 0;
-              return;
-            }
-
-            const nextIndex = (state.isShuffle) ? Math.floor(Math.random() * playlist.length) : (state.currentTrackIndex + 1) % playlist.length;
-            
-            if (currentTrack.playbackMode === PlaybackMode.FOLLOW) {
-              if (nextIndex === state.currentTrackIndex && audioRef.current) {
-                audioRef.current.currentTime = playlist[nextIndex].startTime || 0;
-                // We don't need to call play() here because isPlaying is already true or being set to true,
-                // and the useEffect will handle it if the index changed. 
-                // If index didn't change, we need to make sure the audio element actually plays.
-                audioRef.current.play().catch(() => {});
-              }
-              setState(p => ({ ...p, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: true }));
-            } else if (currentTrack.playbackMode === PlaybackMode.ADVANCE) {
-              if (nextIndex === state.currentTrackIndex && audioRef.current) {
-                audioRef.current.currentTime = playlist[nextIndex].startTime || 0;
-              }
-              setState(p => ({ ...p, currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: false }));
-            } else {
-              setState(p => ({ ...p, isPlaying: false, currentTime: 0 }));
-              if (audioRef.current) audioRef.current.currentTime = 0;
-            }
-          }}
-        />
-        <audio 
-          ref={nextAudioRef} 
-          style={{ display: 'none' }} 
-          onError={(e) => {
-            const audio = nextAudioRef.current;
-            if (audio && audio.error) {
-              console.error("Next audio element error:", audio.error.message, "Code:", audio.error.code);
-            }
-          }}
-        />
+                  setStates(prev => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: true };
+                    return next;
+                  });
+                } else if (currentTrack.playbackMode === PlaybackMode.ADVANCE) {
+                  if (nextIndex === state.currentTrackIndex && audioRefs[i].current) {
+                    audioRefs[i].current.currentTime = playlist[nextIndex].startTime || 0;
+                  }
+                  setStates(prev => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], currentTrackIndex: nextIndex, selectedTrackIndex: nextIndex, currentTime: 0, isPlaying: false };
+                    return next;
+                  });
+                } else {
+                  setStates(prev => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], isPlaying: false, currentTime: 0 };
+                    return next;
+                  });
+                  if (audioRefs[i].current) audioRefs[i].current.currentTime = 0;
+                }
+              }}
+            />
+            <audio 
+              ref={nextAudioRefs[i]} 
+              style={{ display: 'none' }} 
+              onError={(e) => {
+                const audio = nextAudioRefs[i].current;
+                if (audio && audio.error) {
+                  console.error(`Next audio element error (Tab ${i+1}):`, audio.error.message);
+                }
+              }}
+            />
+          </React.Fragment>
+        ))}
 
         <SettingsModal 
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
-          duckingLevel={state.duckingLevel}
-          setDuckingLevel={(level) => setState(p => ({ ...p, duckingLevel: level }))}
-          fadeOutDuration={state.fadeOutDuration}
-          setFadeOutDuration={(duration) => setState(p => ({ ...p, fadeOutDuration: duration }))}
-          isLoudnessNormalized={state.isLoudnessNormalized}
-          setIsLoudnessNormalized={(value) => setState(p => ({ ...p, isLoudnessNormalized: value }))}
+          masterVolume={states[activeTab].volume}
+          setMasterVolume={(vol) => setStates(prev => {
+            const next = [...prev];
+            next[activeTab] = { ...next[activeTab], volume: vol };
+            return next;
+          })}
+          duckingLevel={states[activeTab].duckingLevel}
+          setDuckingLevel={(level) => setStates(prev => {
+            const next = [...prev];
+            next[activeTab] = { ...next[activeTab], duckingLevel: level };
+            return next;
+          })}
+          fadeOutDuration={states[activeTab].fadeOutDuration}
+          setFadeOutDuration={(duration) => setStates(prev => {
+            const next = [...prev];
+            next[activeTab] = { ...next[activeTab], fadeOutDuration: duration };
+            return next;
+          })}
+          isLoudnessNormalized={states[activeTab].isLoudnessNormalized}
+          setIsLoudnessNormalized={(value) => setStates(prev => {
+            const next = [...prev];
+            next[activeTab] = { ...next[activeTab], isLoudnessNormalized: value };
+            return next;
+          })}
+          isTestToneOn={states[activeTab].isTestToneOn}
+          setIsTestToneOn={(value) => {
+            initAudioEngine();
+            setStates(prev => {
+              const next = [...prev];
+              next[activeTab] = { ...next[activeTab], isTestToneOn: value };
+              return next;
+            });
+          }}
+          testToneChannel={states[activeTab].testToneChannel}
+          setTestToneChannel={(channel) => setStates(prev => {
+            const next = [...prev];
+            next[activeTab] = { ...next[activeTab], testToneChannel: channel };
+            return next;
+          })}
         />
       </main>
     </div>
